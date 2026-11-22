@@ -11,7 +11,9 @@ Uses the upstream build scripts shipped inside the LilyPond source tarball
   ./build.py lilypond --abi x86_64     # cross-compile LilyPond
   ./build.py package --abi x86_64      # -> out/jniLibs/<abi>, out/assets
 
-Bumping LILYPOND_VERSION picks up upstream's new dependency versions.
+Bumping LILYPOND_VERSION (or passing --lilypond-version) picks up upstream's
+new dependency versions.  --build-dir and --out keep builds of different
+versions apart.
 """
 
 import argparse
@@ -27,6 +29,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 DOWNLOADS = os.path.join(HERE, "downloads")
 SRC = os.path.join(HERE, "src")
 BUILD = os.path.join(HERE, "build")
+OUT = os.path.join(HERE, "out")
 DEFAULT_NDK = os.path.expanduser("~/Android/Sdk/ndk/30.0.16248370")
 DEFAULT_API = 28
 
@@ -109,6 +112,7 @@ def build_lilypond(lib, c) -> bool:
 
 
 def main():
+    global LILYPOND_VERSION, BUILD, OUT  # pylint: disable=global-statement
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "command", choices=["host-deps", "deps", "host-lilypond", "lilypond", "package"]
@@ -121,8 +125,21 @@ def main():
         "--only",
         help="comma-separated package names to (re)build, e.g. guile,bdwgc",
     )
+    parser.add_argument(
+        "--lilypond-version",
+        default=os.environ.get("LILYPOND_VERSION", LILYPOND_VERSION),
+        help=f"LilyPond release to build (default {LILYPOND_VERSION})",
+    )
+    parser.add_argument("--build-dir", help="build directory (default native/build)")
+    parser.add_argument("--out", help="package output directory (default native/out)")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+
+    LILYPOND_VERSION = args.lilypond_version
+    if args.build_dir:
+        BUILD = os.path.abspath(args.build_dir)
+    if args.out:
+        OUT = os.path.abspath(args.out)
 
     logging.basicConfig(
         format="%(message)s", level=logging.DEBUG if args.debug else logging.INFO
@@ -145,7 +162,7 @@ def main():
             ok = build_lilypond(lib, c)
         else:
             packager = overlay.AndroidPackager(
-                lib.LilyPond(lilypond_tarball()), c, os.path.join(HERE, "out")
+                lib.LilyPond(lilypond_tarball()), c, OUT
             )
             logging.info("Packaged runtime %s", packager.package_apk())
             ok = True

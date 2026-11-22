@@ -10,8 +10,7 @@ D=/data/local/tmp/lily
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-python3 -c "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" \
-    "$OUT/assets/lilypond-runtime.zip" "$STAGE/root"
+mkdir -p "$STAGE/root" && tar -xJf "$OUT/assets/lilypond-runtime.tar.xz" -C "$STAGE/root"
 mkdir -p "$STAGE/root/bin" "$STAGE/root/libexec"
 cp "$OUT/jniLibs/$ABI/liblilypond.so" "$STAGE/root/bin/lilypond"
 cp "$OUT/jniLibs/$ABI/libgs.so" "$STAGE/root/libexec/gs"

@@ -2,11 +2,12 @@ package org.lilyengine.engine
 
 import android.content.Context
 import android.system.Os
+import org.tukaani.xz.XZInputStream
 import java.io.File
-import java.util.zip.ZipInputStream
+import java.io.InputStream
 
 /**
- * Unpacks the LilyPond runtime (assets/lilypond-runtime.zip) into
+ * Unpacks the LilyPond runtime (assets/lilypond-runtime.tar.xz) into
  * filesDir/lilypond/<version>/ using upstream LilyPond's binary package
  * layout:
  *
@@ -38,7 +39,7 @@ internal class RuntimeInstaller(private val context: Context) {
         // Remove older runtimes and any half-finished install.
         base.listFiles()?.forEach { it.deleteRecursively() }
         val tmp = File(base, "$version.partial").apply { mkdirs() }
-        unzip(tmp)
+        untar(tmp)
         fixBytecodeTimestamps(tmp)
         linkExecutables(tmp)
         writeFontconfig(tmp)
@@ -49,23 +50,71 @@ internal class RuntimeInstaller(private val context: Context) {
         return root
     }
 
-    private fun unzip(dest: File) {
+    /** Extracts the ustar archive written by native/android_overlay.py. */
+    private fun untar(dest: File) {
         val canonicalDest = dest.canonicalPath + File.separator
-        ZipInputStream(context.assets.open(RUNTIME_ASSET).buffered()).use { zip ->
+        val header = ByteArray(512)
+        XZInputStream(context.assets.open(RUNTIME_ASSET).buffered(1 shl 16)).buffered(1 shl 16).use { tar ->
             while (true) {
-                val entry = zip.nextEntry ?: break
-                val out = File(dest, entry.name)
-                require(out.canonicalPath.startsWith(canonicalDest)) { "Bad entry ${entry.name}" }
-                if (entry.isDirectory) {
-                    out.mkdirs()
-                } else {
-                    out.parentFile?.mkdirs()
-                    out.outputStream().use { zip.copyTo(it) }
+                if (!tar.readFully(header)) break
+                if (header.all { it == 0.toByte() }) break // end-of-archive block
+                val name = header.field(345, 155).let { prefix ->
+                    val base = header.field(0, 100)
+                    if (prefix.isEmpty()) base else "$prefix/$base"
                 }
-                if (entry.time > 0) out.setLastModified(entry.time)
+                val size = header.field(124, 12).trim().ifEmpty { "0" }.toLong(8)
+                val type = header[156].toInt().toChar()
+                val out = File(dest, name)
+                require(out.canonicalPath.startsWith(canonicalDest)) { "Bad entry $name" }
+                when (type) {
+                    '0', '\u0000' -> {
+                        out.parentFile?.mkdirs()
+                        out.outputStream().use { tar.copyExactly(it, size) }
+                        val mode = header.field(100, 8).trim().toInt(8)
+                        if (mode and 0b001_000_000 != 0) out.setExecutable(true)
+                    }
+                    '5' -> out.mkdirs()
+                    else -> tar.copyExactly(null, size)
+                }
+                val pad = (512 - size % 512) % 512
+                tar.skipNBytesCompat(pad)
             }
         }
     }
+
+    private fun ByteArray.field(offset: Int, length: Int): String {
+        var end = offset
+        while (end < offset + length && this[end] != 0.toByte()) end++
+        return String(this, offset, end - offset, Charsets.UTF_8)
+    }
+
+    /** Fills [buf] completely; false on a clean end of stream. */
+    private fun InputStream.readFully(buf: ByteArray): Boolean {
+        var n = 0
+        while (n < buf.size) {
+            val r = read(buf, n, buf.size - n)
+            if (r < 0) {
+                check(n == 0) { "Truncated runtime archive" }
+                return false
+            }
+            n += r
+        }
+        return true
+    }
+
+    private fun InputStream.copyExactly(out: java.io.OutputStream?, count: Long) {
+        val buf = ByteArray(1 shl 16)
+        var left = count
+        while (left > 0) {
+            val r = read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+            check(r >= 0) { "Truncated runtime archive" }
+            out?.write(buf, 0, r)
+            left -= r
+        }
+    }
+
+    // InputStream.skipNBytes needs API 33.
+    private fun InputStream.skipNBytesCompat(count: Long) = copyExactly(null, count)
 
     /**
      * Guile only uses a .go file if it is not older than its .scm source.
@@ -132,7 +181,7 @@ internal class RuntimeInstaller(private val context: Context) {
     fun executable(root: File): File = File(root, "bin/lilypond")
 
     companion object {
-        const val RUNTIME_ASSET = "lilypond-runtime.zip"
+        const val RUNTIME_ASSET = "lilypond-runtime.tar.xz"
         const val VERSION_ASSET = "lilypond-runtime.version"
     }
 }

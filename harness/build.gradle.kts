@@ -45,8 +45,9 @@ android {
     }
     buildTypes {
         release {
-            // A test app: no shrinking, so stack traces in reports stay readable.
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release")
         }
     }

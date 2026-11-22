@@ -4,8 +4,10 @@ plugins {
 
 // Native artifacts produced by native/build.py package (not checked in):
 //   native/out/jniLibs/<abi>/liblilypond.so, libgs.so
-//   native/out/assets/lilypond-runtime.zip, lilypond-runtime.version
-val nativeOut = rootProject.file("native/out")
+//   native/out/assets/lilypond-runtime.tar.xz, lilypond-runtime.version
+// (-Plilyengine.nativeOut=<dir> uses another package output, e.g. a trial build)
+val nativeOut = (findProperty("lilyengine.nativeOut") as String?)?.let(rootProject::file)
+    ?: rootProject.file("native/out")
 
 android {
     namespace = "org.lilyengine.engine"
@@ -26,5 +28,6 @@ android {
 
 dependencies {
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.xz)
     testImplementation(libs.junit)
 }

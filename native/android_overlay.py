@@ -276,6 +276,36 @@ def _ghostscript_args(orig, self, c):
     return args
 
 
+@_wrap(up_deps.Ghostscript, "apply_patches")
+def _ghostscript_slim_romfs(orig, self, c):
+    """Leave unused resources out of Ghostscript's built-in ROM file system.
+
+    LilyPond embeds every font it uses in its PostScript output (CJK fonts
+    as CFF CIDFonts loaded with `/CIDFont findresource`), so Ghostscript's
+    own URW fonts (Resource/Font), its CJK fallback font (CIDFSubst) and
+    the CJK CMaps are never needed. Dropping them saves about 6 MB in the
+    APK. Only the -dgs-load-fonts option, which loads fonts from disk
+    instead of embedding them, would need the Font resources.
+    """
+    orig(self, c)
+    if not is_android(c):
+        return
+
+    def patch(content: str) -> str:
+        replacements = [
+            ("PDF_RESOURCE_LIST=CMap$(D)*", "PDF_RESOURCE_LIST=CMap$(D)Identity-*"),
+            ("PS_RESOURCE_LIST=SubstCID$(D)* CIDFSubst$(D)* ", "PS_RESOURCE_LIST=SubstCID$(D)* "),
+            ("PS_FONT_RESOURCE_LIST=-B -b Font$(D)*", "PS_FONT_RESOURCE_LIST="),
+        ]
+        for old, new in replacements:
+            if old not in content:
+                raise RuntimeError(f"psromfs.mak changed upstream; update the overlay: {old}")
+            content = content.replace(old, new)
+        return content
+
+    self.patch_file(c, "psi/psromfs.mak", patch)
+
+
 # --- Host (native) build fixes for newer distributions ---------------------
 # Upstream builds its Linux binaries on AlmaLinux 8.  On glibc >= 2.43 with
 # GCC >= 15, glibc defines the C23 const-preserving functions (bsearch,
@@ -351,7 +381,8 @@ def _lilypond_build(orig, self, c):
 
 import hashlib  # noqa: E402  pylint: disable=wrong-import-position
 import subprocess  # noqa: E402  pylint: disable=wrong-import-position
-import zipfile  # noqa: E402  pylint: disable=wrong-import-position
+import lzma  # noqa: E402  pylint: disable=wrong-import-position
+import tarfile  # noqa: E402  pylint: disable=wrong-import-position
 
 
 class AndroidPackager(up_lily.LilyPondPackager):
@@ -403,15 +434,25 @@ class AndroidPackager(up_lily.LilyPondPackager):
                 shutil.rmtree(path)
 
     def package_apk(self) -> str:
+        """Write assets/lilypond-runtime.tar.xz plus its version stamp.
+
+        xz is about 40% smaller than zip's deflate for this content (mostly
+        Guile bytecode). The archive is a plain ustar file with fixed
+        metadata, so identical inputs give an identical archive.
+        """
         self.prepare_package()
         assets = os.path.join(self.out_dir, "assets")
         os.makedirs(assets, exist_ok=True)
-        zip_path = os.path.join(assets, "lilypond-runtime.zip")
+        for old in ("lilypond-runtime.zip",):
+            if os.path.exists(os.path.join(assets, old)):
+                os.remove(os.path.join(assets, old))
+        archive = os.path.join(assets, "lilypond-runtime.tar.xz")
         names = sorted(os.listdir(self.package_dir))
         # lib/ (bytecode) last, so .go files are never older than sources.
         names = [n for n in names if n != "lib"] + ["lib"]
         digest = hashlib.sha256()
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        with lzma.open(archive, "wb", preset=9 | lzma.PRESET_EXTREME) as xz, \
+                tarfile.open(fileobj=xz, mode="w", format=tarfile.USTAR_FORMAT) as tar:
             for top in names:
                 for root, dirs, files in os.walk(os.path.join(self.package_dir, top)):
                     dirs.sort()
@@ -420,7 +461,13 @@ class AndroidPackager(up_lily.LilyPondPackager):
                         if os.path.islink(path):
                             continue
                         arc = os.path.relpath(path, self.package_dir)
-                        z.write(path, arc)
+                        info = tar.gettarinfo(path, arc)
+                        info.uid = info.gid = 0
+                        info.uname = info.gname = ""
+                        info.mtime = 946684800  # 2000-01-01; the app resets times
+                        info.mode = 0o755 if os.access(path, os.X_OK) else 0o644
+                        with open(path, "rb") as f:
+                            tar.addfile(info, f)
                         digest.update(arc.encode())
                         with open(path, "rb") as f:
                             digest.update(f.read())

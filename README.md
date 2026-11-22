@@ -22,10 +22,10 @@ global state, calls `exit()`, and Guile's GC owns the whole process.
 - The executables ship as `jniLibs/<abi>/liblilypond.so` and `libgs.so` (Ghostscript).
   Android installs them into `nativeLibraryDir`, the only place an app may `exec()` from
   on Android 10 and later.
-- Everything else ships as `assets/lilypond-runtime.zip`: Scheme and `.ly` files,
+- Everything else ships as `assets/lilypond-runtime.tar.xz`: Scheme and `.ly` files,
   Guile's library and bytecode, LilyPond's bytecode, and fonts. This is upstream's binary
   package layout.
-- On first use the engine unpacks the zip into `filesDir/lilypond/<version>/` and creates
+- On first use (about 4 s) the engine unpacks the archive into `filesDir/lilypond/<version>/` and creates
   two symlinks: `bin/lilypond` → `liblilypond.so` and `libexec/gs` → `libgs.so`.
   LilyPond derives its data prefix from `argv[0]`, so upstream's own relocation files
   then set up Guile, Fontconfig and `PATH`.
@@ -57,11 +57,19 @@ Device checks that run without the app:
 - `native/tools/device-test-lilypond.sh [abi] [file.ly]`: renders a score in
   `/data/local/tmp` and pulls the PDF and PNG back.
 
+Release APKs: `./gradlew :harness:assembleRelease -Plilyengine.abis=arm64-v8a` builds a
+single-ABI APK (about 22 MB), signed if `~/.android-keys/lilyengine-release.properties`
+exists.
+
 ### Updating LilyPond
 
 1. Bump `LILYPOND_VERSION` in `native/build.py`.
 2. Delete `native/build/`.
 3. Rebuild.
+
+To try a release without touching the default build, pass `--lilypond-version X.Y.Z
+--build-dir <dir> --out <dir>` to every `build.py` command, and build the APK with
+`-Plilyengine.nativeOut=<dir>`.
 
 Only `android_overlay.py` is ours to maintain.
 
@@ -81,6 +89,31 @@ Only `android_overlay.py` is ours to maintain.
 | Cross compiler doesn't see `/usr/include/FlexLexer.h` | copy it (as upstream does for mingw) |
 | Python is not needed by the engine | disabled for Android (CPython has official Android support for later) |
 | Host build on glibc ≥ 2.43 + GCC 15: gnulib redeclares C23 `_Generic` functions | parenthesize declared names in gnulib's headers |
+
+## Size
+
+The arm64 release APK is about 22 MB:
+
+| Part | In APK |
+|---|---|
+| Runtime data (`.tar.xz`, mostly Guile bytecode; 77 MB unpacked) | 10.0 MB |
+| `liblilypond.so` | 6.2 MB |
+| `libgs.so` | 4.1 MB |
+| App code (R8-shrunk) | 1.8 MB |
+
+What made it smaller (it was 61 MB):
+
+- **R8 shrinking** in release builds: about −23 MB.
+- **xz instead of zip** for the runtime: −7 MB.
+- **A slimmer Ghostscript:** about −8 MB. LilyPond embeds every font in its PostScript,
+  so Ghostscript's built-in URW fonts, CJK fallback font and CJK CMaps are left out of
+  its ROM file system (`_ghostscript_slim_romfs`). The one thing this breaks is
+  `-dgs-load-fonts`.
+
+Not done:
+
+- **Stripping debug info from Guile's `.go` files.** It's only about 2 MB of 60 MB.
+- **Pruning Guile modules.** User scores may `use-modules` anything.
 
 ## Licensing
 
