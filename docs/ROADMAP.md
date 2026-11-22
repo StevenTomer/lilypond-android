@@ -71,6 +71,15 @@ This plan covers the pieces needed before the editor and the editor phases after
     emulator, 13.7 s in full and 2.1 s windowed.
   - The Score tab: after an edit to a score whose last full render took over 1.5 s, the
     preview shows first, then the whole score renders and scrolls back to the edited note.
+- **MIDI import, done (first cut):** LilyPond's own midi2ly, convert-ly and musicxml2ly
+  come from the source release matching the engine version. A Gradle task fills in the
+  build placeholders (no native rebuild needed), and they run in-process from
+  `lilyimport.py`: the module is reloaded for each run, and the console streams are
+  in-memory. `LilyTools.importMidi` runs midi2ly, then convert-ly. The Score tab has
+  Import MIDI with quantization and triplet options.
+  - The round-trip test checks that every pitch and start time comes back.
+  - Known: voices sharing a staff come back as chords, because LilyPond writes one MIDI
+    track per staff. A clean-up pass that splits them into voices is future work.
 - **E2 start:** key-aware step up/down (`lilyedit.step`, all church modes), and dragging
   a selected note head with the pen shows a ghost note at the target position.
 - **M3 (`:lilytools`), first cut done:**

@@ -2,6 +2,13 @@ package org.lilyengine.harness
 
 import android.media.MediaPlayer
 import androidx.compose.foundation.background
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.RadioButton
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.OutlinedButton
@@ -105,6 +112,16 @@ fun ScoreScreen(engine: LilyPondEngine) {
     /** How long the last full render took: long scores get a fast preview after an edit. */
     var lastFullMillis by remember { mutableStateOf(0L) }
     var longSample by remember { mutableStateOf(false) }
+    /** A MIDI file picked for import, waiting for the options dialog. */
+    var midiToImport by remember { mutableStateOf<java.io.File?>(null) }
+    val pickMidi = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val f = java.io.File(context.cacheDir, "import.mid")
+        runCatching {
+            context.contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
+            midiToImport = f
+        }.onFailure { status = "Can't read that file: ${it.message}" }
+    }
     /** Set by an edit: the text it produced and the moment of the edited note. */
     val pendingEdit = remember { mutableStateOf<Pair<String, String>?>(null) }
 
@@ -232,6 +249,27 @@ fun ScoreScreen(engine: LilyPondEngine) {
         focus.requestFocus()
     }
 
+    midiToImport?.let { file ->
+        MidiImportDialog(
+            onDismiss = { midiToImport = null },
+            onImport = { options ->
+                midiToImport = null
+                status = "Importing MIDI…"
+                scope.launch {
+                    try {
+                        val imported = tools.importMidi(file, options)
+                        undo.addLast(text.text)
+                        selectedOffset = null
+                        selection = emptyList()
+                        text = TextFieldValue(imported.text)
+                    } catch (e: LilyTools.EditException) {
+                        status = "MIDI import failed: ${e.message}"
+                    }
+                }
+            },
+        )
+    }
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
         val score: @Composable (Modifier) -> Unit = { m ->
@@ -242,6 +280,9 @@ fun ScoreScreen(engine: LilyPondEngine) {
                 ) {
                     Text(status, fontSize = 13.sp, modifier = Modifier.weight(1f).padding(top = 10.dp))
                     error?.let { e -> TextButton(onClick = { jumpTo(e) }) { Text("Go to error") } }
+                    TextButton(onClick = {
+                        pickMidi.launch(arrayOf("audio/midi", "audio/x-midi", "audio/sp-midi", "application/octet-stream"))
+                    }) { Text("Import MIDI") }
                     TextButton(onClick = {
                         undo.clear(); selectedOffset = null; selection = emptyList()
                         longSample = !longSample
@@ -314,6 +355,48 @@ fun ScoreScreen(engine: LilyPondEngine) {
             }
         }
     }
+}
+
+/** Options for midi2ly: how finely to quantise, and whether triplets are allowed. */
+@Composable
+private fun MidiImportDialog(onDismiss: () -> Unit, onImport: (LilyTools.MidiImportOptions) -> Unit) {
+    var quant by remember { mutableStateOf("16") }
+    var triplets by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import MIDI") },
+        text = {
+            Column {
+                Text("Round note starts and lengths to:")
+                for ((q, label) in listOf("8" to "eighth notes", "16" to "sixteenth notes", "32" to "thirty-second notes")) {
+                    Row(Modifier.fillMaxWidth().clickable { quant = q }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = quant == q, onClick = { quant = q })
+                        Text(label)
+                    }
+                }
+                Row(Modifier.fillMaxWidth().clickable { triplets = !triplets }, verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = triplets, onCheckedChange = { triplets = it })
+                    Text("Allow triplets")
+                }
+                Text(
+                    "Uses LilyPond's midi2ly. Each track becomes a staff; notes that sound together become chords.",
+                    fontSize = 12.sp, color = Color.Gray,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val tupletUnit = (quant.toInt() / 2).coerceAtLeast(4)
+                onImport(
+                    LilyTools.MidiImportOptions(
+                        durationQuant = quant, startQuant = quant,
+                        tuplets = if (triplets) listOf("$tupletUnit*2/3", "${tupletUnit * 2}*2/3") else emptyList(),
+                    ),
+                )
+            }) { Text("Import") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** Pitch, duration and delete buttons for the selected note (or rest). */

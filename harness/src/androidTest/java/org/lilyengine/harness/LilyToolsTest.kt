@@ -53,6 +53,27 @@ class LilyToolsTest {
     }
 
     @Test
+    fun midiImportRoundTrip() = runBlocking {
+        val src = """
+            \version "2.26.0"
+            \new PianoStaff <<
+              \new Staff \relative c'' { \key g \major << { b4 c d2 | e4 d c b } \\ { g,2 fis | g4 a fis g } >> | <fis a d>1 }
+              \new Staff \relative c { \clef bass \key g \major g2 d' | c b | d1 }
+            >>
+        """.trimIndent()
+        val original = engine.render(src)
+        assertTrue(original.log, original.success)
+        val imported = tools.importMidi(original.midi.single())
+        assertTrue(imported.text, imported.text.contains("\\version \"2.26.0\""))
+        val back = engine.render(imported.text)
+        assertTrue(imported.text + back.log, back.success)
+        // Same pitches at the same moments (voices may come back as chords).
+        fun notes(r: LilyPondEngine.Result) = r.scoreMap!!.grobs.filter { it.type == "NoteHead" }
+            .map { it.momentValue to it.pitch!!.name }.sortedWith(compareBy({ it.first }, { it.second }))
+        assertEquals(notes(original), notes(back))
+    }
+
+    @Test
     fun errorsComeBackAsExceptions() = runBlocking {
         try {
             tools.setPitch("{ c'4 }", 0, LilyTools.Pitch(0, 0, 0))

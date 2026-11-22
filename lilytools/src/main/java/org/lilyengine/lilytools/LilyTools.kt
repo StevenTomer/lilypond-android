@@ -81,6 +81,50 @@ class LilyTools(context: Context) {
 
     suspend fun relativeToAbsolute(text: String): TextEdit = call(text, JSONObject().put("op", "rel2abs"))
 
+    /** How midi2ly reads a MIDI file. */
+    data class MidiImportOptions(
+        /** Quantise note durations to this note value, e.g. "16"; null keeps them. */
+        val durationQuant: String? = "16",
+        /** Quantise note starts to this note value. */
+        val startQuant: String? = "16",
+        /** Tuplet durations allowed, e.g. "8*2/3" for eighth-note triplets. */
+        val tuplets: List<String> = emptyList(),
+        /** Key signature: sharps (negative for flats) and whether minor. Null: from the file. */
+        val key: Pair<Int, Boolean>? = null,
+        /** Absolute pitches instead of \relative. */
+        val absolute: Boolean = false,
+    )
+
+    /** The result of an import: LilyPond text in the current syntax, and the tools' messages. */
+    data class Imported(val text: String, val log: String)
+
+    /**
+     * Converts a MIDI file to LilyPond with LilyPond's own midi2ly (as
+     * Frescobaldi does), then updates the result to the current syntax with
+     * convert-ly. midi2ly writes one staff per track; notes that sound
+     * together in a track become chords.
+     */
+    suspend fun importMidi(midi: java.io.File, options: MidiImportOptions = MidiImportOptions()): Imported =
+        withContext(dispatcher) {
+            lilyedit() // starts Python if needed
+            val req = JSONObject().put("op", "midi2ly").put("path", midi.absolutePath)
+                .put("absolute", options.absolute)
+            options.durationQuant?.let { req.put("duration_quant", it) }
+            options.startQuant?.let { req.put("start_quant", it) }
+            options.key?.let { (sharps, minor) -> req.put("key", "$sharps:${if (minor) 1 else 0}") }
+            if (options.tuplets.isNotEmpty()) req.put("tuplets", org.json.JSONArray(options.tuplets))
+            val first = importCall(req)
+            val converted = importCall(JSONObject().put("op", "convert_ly").put("text", first.text))
+            Imported(converted.text, first.log + "\n" + converted.log)
+        }
+
+    private fun importCall(request: JSONObject): Imported {
+        val module = Python.getInstance().getModule("lilyimport")
+        val reply = JSONObject(module.callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        return Imported(reply.getString("text"), reply.optString("log"))
+    }
+
     private suspend fun call(text: String, request: JSONObject): TextEdit = withContext(dispatcher) {
         request.put("text", text)
         val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
@@ -89,6 +133,7 @@ class LilyTools(context: Context) {
     }
 
     private fun lilyedit(): PyObject = module ?: run {
+        // (also starts Python for the importers)
         if (!Python.isStarted()) Python.start(AndroidPlatform(appContext))
         Python.getInstance().getModule("lilyedit").also { module = it }
     }

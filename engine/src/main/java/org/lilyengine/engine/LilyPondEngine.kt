@@ -59,20 +59,28 @@ class LilyPondEngine(context: Context) {
         val timeoutSeconds: Long = 300,
     )
 
+    /**
+     * What a render produced. The files live in a job directory that is
+     * deleted when the next render starts: open or copy them before that.
+     */
     data class Result(
         val exitCode: Int,
         /** Output files (one PNG per page, or one PDF/SVG per book), in page order. */
         val outputs: List<File>,
         /** MIDI files, one per score with MIDI output. */
         val midi: List<File>,
-        /** The score map, when requested and the render produced one. */
+        /** The score map file, when requested and the render produced one. */
         val scoreMapFile: File?,
+        /**
+         * The score map, already read: the job's files are deleted when the
+         * next render starts, so it's read before this returns.
+         */
+        val scoreMap: ScoreMap?,
         val log: String,
         val diagnostics: List<Diagnostic>,
         val elapsedMillis: Long,
     ) {
         val success: Boolean get() = exitCode == 0 && outputs.isNotEmpty()
-        val scoreMap: ScoreMap? by lazy { scoreMapFile?.let(ScoreMap::read) }
     }
 
     /** Unpacks the runtime if needed. Safe to call repeatedly; slow only once. */
@@ -164,6 +172,7 @@ class LilyPondEngine(context: Context) {
             outputs = outputs,
             midi = midi,
             scoreMapFile = mapFile.takeIf { it.isFile && it.length() > 0 },
+            scoreMap = mapFile.takeIf { it.isFile && it.length() > 0 }?.let { runCatching { ScoreMap.read(it) }.getOrNull() },
             log = log,
             diagnostics = Diagnostic.parse(log, input.path),
             elapsedMillis = elapsed,
