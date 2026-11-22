@@ -36,7 +36,7 @@ class SelfTest(private val engine: LilyPondEngine) {
             val r = engine.render(SAMPLE, LilyPondEngine.Format.PDF)
             requireOk(r)
             val pdf = r.outputs.single()
-            val magic = pdf.inputStream().use { String(it.readNBytes(4)) }
+            val magic = pdf.inputStream().use { String(ByteArray(4).also { b -> it.read(b) }) }
             require(magic == "%PDF") { "Not a PDF: $magic" }
             "${pdf.length() / 1024} KB, LilyPond ran ${r.elapsedMillis} ms"
         }

@@ -28,7 +28,7 @@ class EngineRenderTest {
         assertEquals(r.log, 0, r.exitCode)
         val pdf = r.outputs.single()
         assertTrue(r.log, pdf.length() > 1000)
-        assertEquals("%PDF", pdf.inputStream().use { String(it.readNBytes(4)) })
+        assertEquals("%PDF", pdf.inputStream().use { String(ByteArray(4).also { b -> it.read(b) }) })
         assertTrue(r.log, r.diagnostics.none { it.severity == Diagnostic.Severity.ERROR })
     }
 
