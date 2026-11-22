@@ -39,6 +39,7 @@ fun MidiScreen(keyboard: MidiKeyboard) {
     val connected by keyboard.connected.collectAsState()
     val canSend by keyboard.canSend.collectAsState()
     val status by keyboard.status.collectAsState()
+    val appsListening by keyboard.appsListening.collectAsState()
     val log = remember { mutableStateListOf<String>() }
     val latencies = remember { mutableListOf<Double>() }
     fun add(line: String) {
@@ -97,11 +98,21 @@ fun MidiScreen(keyboard: MidiKeyboard) {
             }
             if (devices.isEmpty()) Text("No MIDI devices found.", modifier = Modifier.padding(8.dp))
         }
+        Text(
+            "Other MIDI apps on this tablet see LilyPond as a MIDI device named \"LilyPond\": what they " +
+                "play into it is taken like a keyboard, and what LilyPond plays comes out of it. " +
+                when (appsListening) {
+                    0 -> "No app is listening now."
+                    1 -> "1 app is listening now, so Play in the Score tab can sound there."
+                    else -> "$appsListening apps are listening now, so Play in the Score tab can sound there."
+                },
+            fontSize = 13.sp,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = canSend, onClick = {
+            Button(enabled = canSend || appsListening > 0, onClick = {
                 keyboard.play(listOf(60, 64, 67), 700)
-                add("→ sent C major chord to the keyboard")
-            }) { Text("Play C major on keyboard") }
+                add("→ sent C major chord" + listOfNotNull(" to the keyboard".takeIf { canSend }, " to the apps listening".takeIf { appsListening > 0 }).joinToString(" and"))
+            }) { Text("Play C major") }
             Button(onClick = { log.clear(); latencies.clear() }) { Text("Clear") }
             Button(onClick = { shareText(context, "LilyPond MIDI test", report()) }) { Text("Share") }
         }

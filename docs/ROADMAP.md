@@ -112,8 +112,7 @@ This plan covers the pieces needed before the editor and the editor phases after
     `lilyedit.insert` spells them for the key at that point (`spell`: twelve fifths
     around the key signature, shifted for minor) and sets octave marks so they sound
     as played in `\relative` and absolute music, and in either voice of `\\`.
-  - Still to do: the hands-on test with the DGX-670, and a virtual MIDI device for
-    instrumented tests.
+  - Still to do: the hands-on test with the DGX-670.
 - **M6 (0.9.0):**
   - `MidiFile` reads LilyPond's MIDI (tracks merged, tempo map), and `MidiPlayer` plays
     it to the keyboard on a timing thread, releasing sounding notes when stopped.
@@ -136,6 +135,22 @@ This plan covers the pieces needed before the editor and the editor phases after
   - A finger long press grabs the nearest note within 24 dp and selects it if it
     wasn't selected. The drag is summed from each move, so the selection info growing
     doesn't make the note jump.
+
+- **0.10.0, LilyPond as a MIDI device:**
+  - The app is a MIDI device named "LilyPond" that other MIDI apps on the tablet see
+    (`SharedMidiDevice`, a `MidiDeviceService` in `:midi`). Notes played into its input
+    reach `MidiKeyboard`'s listeners like a USB keyboard's, so note entry and the MIDI
+    tab take them. Its output carries what LilyPond plays: "Sound: MIDI apps" sends
+    score playback there when an app listens, and the on-screen piano always does.
+  - The on-screen piano now goes through `MidiKeyboard.tap`, the same path as a
+    keyboard. `MidiKeyboard` never offers LilyPond's own device as a keyboard.
+  - Tests: `SharedMidiDeviceTest` opens the device as another app would.
+    `UsbKeyboardTest` uses `TestKeyboardService`, a stand-in USB keyboard in debug
+    builds only, enabled and disabled to plug and unplug it: notes, running status,
+    chords, step entry into voice 2, sending, playback, and replugging.
+  - Fixed: `MidiKeyboard.start` looked for devices before watching for new ones, so a
+    keyboard plugged in between was missed; and a device reported twice was opened
+    twice.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

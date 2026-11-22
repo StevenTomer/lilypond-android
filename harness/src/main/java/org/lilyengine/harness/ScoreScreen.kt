@@ -116,9 +116,12 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     /** What is playing, if anything; the cursor shows the notes sounding in it. */
     var playback by remember { mutableStateOf<Playback?>(null) }
     var cursor by remember { mutableStateOf<List<Grob>>(emptyList()) }
-    /** With a keyboard connected: play through it rather than the tablet's speaker. */
-    var playOnKeyboard by remember { mutableStateOf(true) }
+    /** Where playback sounds, as chosen; null: on the keyboard if one is connected, else the tablet. */
+    var soundChoice by remember { mutableStateOf<Sound?>(null) }
     val canSend by keyboard.canSend.collectAsState()
+    val appsListening by keyboard.appsListening.collectAsState()
+    val sounds = listOfNotNull(Sound.TABLET, Sound.KEYBOARD.takeIf { canSend }, Sound.APPS.takeIf { appsListening > 0 })
+    val sound = soundChoice?.takeIf { it in sounds } ?: if (canSend) Sound.KEYBOARD else Sound.TABLET
     val context = LocalContext.current
     val tools = remember { LilyTools(context) }
     /** Source offset of the selected note or rest; the selection follows it across re-renders. */
@@ -402,7 +405,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
         val piano: @Composable () -> Unit = {
-            PianoBar(onKey = { k -> entries.trySend(listOf(k)); keyboard.play(listOf(k), 300) })
+            PianoBar(onKey = { k -> keyboard.tap(k) })
         }
         val score: @Composable (Modifier) -> Unit = { m ->
             Column(m) {
@@ -421,8 +424,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         longSample = !longSample
                         text = TextFieldValue(if (longSample) LONG_SAMPLE else SCORE_SAMPLE)
                     }) { Text(if (longSample) "Short sample" else "Long sample") }
-                    if (canSend) TextButton(onClick = { playOnKeyboard = !playOnKeyboard }) {
-                        Text(if (playOnKeyboard) "Sound: keyboard" else "Sound: tablet")
+                    if (sounds.size > 1) TextButton(onClick = { soundChoice = sounds[(sounds.indexOf(sound) + 1) % sounds.size] }) {
+                        Text("Sound: ${sound.label}")
                     }
                     Button(enabled = midi != null || playback != null, onClick = {
                         val current = playback
@@ -431,7 +434,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         } else midi?.let { f ->
                             val start = selection.firstNotNullOfOrNull { it.momentValue }
                             playback = runCatching {
-                                Playback.start(f, start, if (playOnKeyboard && canSend) keyboard else null)
+                                Playback.start(
+                                    f, start,
+                                    when (sound) {
+                                        Sound.TABLET -> null
+                                        Sound.KEYBOARD -> { b -> keyboard.send(b) }
+                                        Sound.APPS -> { b -> keyboard.sendToApps(b) }
+                                    },
+                                )
                             }.onFailure { status = "Can't play: ${it.message}" }.getOrNull()
                         }
                     }) { Text(if (playback != null) "Stop" else if (selection.isNotEmpty()) "Play from here" else "Play") }
@@ -514,9 +524,17 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     }
 }
 
+/** Where playback sounds. */
+private enum class Sound(val label: String) {
+    TABLET("tablet"),
+    KEYBOARD("keyboard"),
+    /** Apps listening to LilyPond's own MIDI device, e.g. a synthesizer. */
+    APPS("MIDI apps"),
+}
+
 /**
- * A MIDI file playing, through a MIDI keyboard ([MidiPlayer]) or the
- * tablet's own synthesizer ([MediaPlayer]), from a point in the music.
+ * A MIDI file playing, sent to a MIDI keyboard or app ([MidiPlayer]) or on
+ * the tablet's own synthesizer ([MediaPlayer]), from a point in the music.
  */
 private class Playback private constructor(
     val file: MidiFile,
@@ -538,12 +556,12 @@ private class Playback private constructor(
     }
 
     companion object {
-        /** Starts at [fromWholeNotes] into the music (null: the start), on [keyboard] if given. */
-        fun start(midi: java.io.File, fromWholeNotes: Double?, keyboard: MidiKeyboard?): Playback {
+        /** Starts at [fromWholeNotes] into the music (null: the start), sending to [send] if given. */
+        fun start(midi: java.io.File, fromWholeNotes: Double?, send: ((ByteArray) -> Unit)?): Playback {
             val file = MidiFile.read(midi)
             val from = fromWholeNotes?.let { file.micros((it * 4 * file.division).toLong()) } ?: 0L
-            return if (keyboard != null) {
-                val s = MidiPlayer(file, { keyboard.send(it) })
+            return if (send != null) {
+                val s = MidiPlayer(file, send)
                 s.start(from)
                 Playback(file, s, null)
             } else {
