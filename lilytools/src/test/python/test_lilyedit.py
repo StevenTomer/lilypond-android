@@ -221,5 +221,60 @@ class Insert(unittest.TestCase):
         self.assertEqual(reply["text"][reply["start"]:reply["start"] + 1], "c")
 
 
+
+class Marks(unittest.TestCase):
+    def test_articulation_on_and_off(self):
+        src = "\\relative { c'4 d e }"
+        on = e.toggle(src, src.index("d"), "staccato")
+        self.assertEqual(on, "\\relative { c'4 d-. e }")
+        self.assertEqual(e.toggle(on, on.index("d"), "staccato"), src)
+
+    def test_any_direction_counts(self):
+        src = "{ c'4^. d'_> }"
+        self.assertEqual(e.marks(src, 2), ["staccato"])
+        self.assertEqual(e.toggle(src, src.index("d'"), "accent"), "{ c'4^. d' }")
+
+    def test_accent_and_decrescendo_after_a_note(self):
+        # '>' here is not the end of a chord
+        src = "{ c'4->\\> d' }"
+        self.assertEqual(e.marks(src, 2), ["accent", "decresc"])
+        self.assertEqual(e.delete(src, 2), "{ d' }")
+
+    def test_marks_go_on_the_chord(self):
+        src = "{ <c' e' g'>2 r }"
+        out = e.toggle(src, src.index("e'"), "fermata")
+        self.assertEqual(out, "{ <c' e' g'>2\\fermata r }")
+
+    def test_one_dynamic_per_note(self):
+        src = "{ c'4\\p-. d' }"
+        self.assertEqual(e.toggle(src, 2, "f"), "{ c'4-.\\f d' }")
+        self.assertEqual(e.toggle(src, 2, "p"), "{ c'4-. d' }")
+
+    def test_hairpins_replace_each_other(self):
+        src = "{ c'4\\< d' e'\\! }"
+        self.assertEqual(e.toggle(src, 2, "decresc"), "{ c'4\\> d' e'\\! }")
+
+    def test_slurs_and_ties(self):
+        src = "{ c'8 d' e'~ e' }"
+        out = e.toggle(src, 2, "slur-start")
+        out = e.toggle(out, out.index("d'"), "slur-end")
+        self.assertEqual(out, "{ c'8( d') e'~ e' }")
+        self.assertEqual(e.toggle(out, out.index("e'"), "tie"), "{ c'8( d') e' e' }")
+        self.assertEqual(e.marks(out, out.index("e'")), ["tie"])
+
+    def test_second_voice_only(self):
+        src = "<< { c'4 d' } \\\\ { e2 } >>"
+        out = e.toggle(src, src.index("e2"), "tenuto")
+        self.assertEqual(out, "<< { c'4 d' } \\\\ { e2-- } >>")
+
+    def test_rest_and_unknown(self):
+        self.assertEqual(e.toggle("{ r2 }", 2, "fermata"), "{ r2\\fermata }")
+        self.assertIn("error", json.loads(e.call(json.dumps({"op": "toggle", "text": "{ c }", "pos": 2, "what": "x"}))))
+
+    def test_through_call(self):
+        reply = json.loads(e.call(json.dumps({"op": "marks", "text": "{ c4-.( d) }", "pos": 2})))
+        self.assertEqual(reply["marks"], ["staccato", "slur-start"])
+
+
 if __name__ == "__main__":
     unittest.main()

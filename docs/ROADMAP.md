@@ -152,6 +152,22 @@ This plan covers the pieces needed before the editor and the editor phases after
     keyboard plugged in between was missed; and a device reported twice was opened
     twice.
 
+- **0.11.0, marks on the score (E1 palette, E2 on the score):**
+  - `lilyedit.toggle` adds or removes one mark on the note, chord or rest at a
+    position. The marks are articulations and ornaments, dynamics (one per note, so a
+    new one replaces the old), slur start and end, hairpin start (`\<` / `\>`, which
+    replace each other) and end (`\!`), and ties. `lilyedit.marks` lists those already
+    there, in any direction (`-.`, `^.`, `_.`).
+  - It edits only the text after the item's duration. A note inside a chord means the
+    chord. In voice 2 of `\\`, only voice 2 changes.
+  - Fixed on the way: `_item_end` took the `>` of an accent (`->`) or a decrescendo
+    (`\>`) for the end of a chord, so `delete` left them behind.
+  - The Score tab has a marks row under the edit bar. The marks on the selected note
+    are filled, and tapping one takes it off.
+  - Tests: 10 Python tests, plus an instrumented test that renders the result and
+    checks, from the score map, that each Script, DynamicText and Slur is in the
+    right voice.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

@@ -37,6 +37,36 @@ class LilyToolsTest {
     }
 
     @Test
+    fun marksGoOnTheRightVoice() = runBlocking {
+        var src = POLY_SAMPLE
+        suspend fun toggle(token: String, what: String) {
+            src = tools.toggle(src, src.indexOf(token), what).applyTo(src)
+        }
+        toggle("c,2", "staccato") // voice 2
+        toggle("c,2", "p")
+        toggle("c4 e", "slur-start") // voice 1: c4( e)
+        toggle("e g e }", "slur-end")
+        toggle("<g b d>", "fermata") // the chord after the << >>
+        assertTrue(src, src.contains("{ c4( e) g e } \\\\ { c,2-.\\p g' }") && src.contains("<g b d>2\\fermata"))
+        assertEquals(setOf("staccato", "p"), tools.marks(src, src.indexOf("c,2")))
+
+        val r = engine.render(src)
+        assertTrue(r.log, r.success)
+        val grobs = r.scoreMap!!.grobs
+        fun voices(type: String) = grobs.filter { it.type == type }.map { it.voiceId.orEmpty() }
+        assertEquals(listOf("2", ""), voices("Script").sortedDescending()) // staccato, fermata
+        assertEquals(listOf("2"), voices("DynamicText"))
+        assertEquals(listOf("1"), voices("Slur"))
+        // The notes themselves are as before.
+        assertEquals(heads(POLY_SAMPLE), heads(src))
+
+        // And off again.
+        toggle("c,2", "staccato")
+        toggle("c,2", "p")
+        assertEquals(emptySet<String>(), tools.marks(src, src.indexOf("c,2")))
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

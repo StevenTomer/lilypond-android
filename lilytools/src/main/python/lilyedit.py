@@ -293,7 +293,10 @@ def _item_end(text, it):
     """The end of an item with what is attached to it (articulations,
     dynamics, slurs, ties): up to the next space."""
     end = it.end
-    while end < len(text) and not text[end].isspace() and text[end] not in "}>|":
+    while end < len(text) and not text[end].isspace() and text[end] not in "}|":
+        # A '>' ends a chord, unless it is an accent (->) or a decrescendo (\\>).
+        if text[end] == ">" and text[end - 1] not in "-^_\\":
+            break
         end += 1
     return end
 
@@ -339,6 +342,136 @@ def delete(text, pos):
     desired = [n.key() for j, n in enumerate(before) if j not in removed]
     text = text[:start] + text[end:]
     return _fix_octaves(text, desired)
+
+
+# --------------------------------------------------------------------------
+# Marks: articulations, dynamics, slurs, hairpins, ties
+
+# What each mark is written as; for articulations, what it is when written
+# after a direction (- ^ _), so -. ^. and _. are all staccato.
+_ARTICULATIONS = {
+    "staccato": ".", "accent": ">", "tenuto": "-", "marcato": "^",
+    "staccatissimo": "!", "portato": "_",
+    "fermata": "\\fermata", "trill": "\\trill", "turn": "\\turn",
+    "prall": "\\prall", "mordent": "\\mordent", "upbow": "\\upbow", "downbow": "\\downbow",
+}
+_DYNAMICS = ["ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "fp", "sf", "sfz", "sfp", "rfz"]
+# Spanner starts and ends, and ties, as written.
+_SPANS = {"slur-start": "(", "slur-end": ")", "cresc": "\\<", "decresc": "\\>",
+          "hairpin-end": "\\!", "tie": "~"}
+# With a dynamic, a hairpin ends: \! isn't needed (and is removed with \< \>).
+_HAIRPINS = ("\\<", "\\>")
+
+
+def _post_events(s):
+    """Splits what follows an item's duration (e.g. "-.\\p(") into
+    (start, end, direction, body) tokens; body is e.g. "." or "\\p" or "("."""
+    out = []
+    i = 0
+    while i < len(s):
+        start = i
+        direction = None
+        if s[i] in "-^_" and i + 1 < len(s):
+            direction = s[i]
+            i += 1
+        if s[i] == "\\":
+            j = i + 1
+            if j < len(s) and s[j].isalpha():
+                while j < len(s) and s[j].isalpha():
+                    j += 1
+            else:
+                j += 1  # \< \> \! \( \)
+            body = s[i:j]
+            i = j
+        elif s[i] == '"':
+            j = s.find('"', i + 1)
+            j = len(s) if j < 0 else j + 1
+            body = s[i:j]
+            i = j
+        elif direction is not None and s[i].isdigit():  # fingering -1
+            j = i
+            while j < len(s) and s[j].isdigit():
+                j += 1
+            body = s[i:j]
+            i = j
+        else:
+            body = s[i]
+            i += 1
+        out.append((start, i, direction, body))
+    return out
+
+
+def _marks_start(text, it):
+    """Where the marks attached to an item start: after its duration (python-ly
+    counts a tie as part of the item)."""
+    if it.dur_tokens:
+        return it.dur_tokens[-1].end
+    return it.end - 1 if text[it.end - 1] == "~" else it.end
+
+
+def marks(text, pos):
+    """The marks on the note, chord or rest at `pos`, as names (see toggle)."""
+    items = _items(text)
+    it = items[_item_index(text, items, pos)][0]
+    names = []
+    for _, _, direction, body in _post_events(text[_marks_start(text, it):_item_end(text, it)]):
+        for name, b in _ARTICULATIONS.items():
+            if body == b and (direction is not None or b.startswith("\\")):
+                names.append(name)
+        if body.startswith("\\") and body[1:] in _DYNAMICS:
+            names.append(body[1:])
+        for name, b in _SPANS.items():
+            if body == b:
+                names.append(name)
+    return names
+
+
+def toggle(text, pos, what):
+    """Adds the mark `what` to the note, chord or rest at `pos`, or removes
+    it if it is there. `what` is an articulation ("staccato", "accent",
+    "tenuto", "marcato", "staccatissimo", "portato", "fermata", "trill",
+    "turn", "prall", "mordent", "upbow", "downbow"), a dynamic ("p", "mf",
+    "sfz"…, which replaces another dynamic there), or "slur-start",
+    "slur-end", "cresc", "decresc", "hairpin-end", "tie". A note inside a
+    chord means the whole chord. Marks go after what is already attached,
+    in the order LilyPond wants: a tie or slur after articulations doesn't
+    matter to it, so they are simply added at the end."""
+    items = _items(text)
+    it = items[_item_index(text, items, pos)][0]
+    start, end = _marks_start(text, it), _item_end(text, it)
+    events = _post_events(text[start:end])
+
+    def matches(direction, body):
+        if what in _ARTICULATIONS:
+            b = _ARTICULATIONS[what]
+            return body == b and (direction is not None or b.startswith("\\"))
+        if what in _DYNAMICS:
+            return body == "\\" + what
+        return body == _SPANS[what]
+
+    if what not in _ARTICULATIONS and what not in _DYNAMICS and what not in _SPANS:
+        raise ValueError("unknown mark " + what)
+    present = [e for e in events if matches(e[2], e[3])]
+    remove = list(present)
+    add = None
+    if not present:
+        if what in _ARTICULATIONS:
+            b = _ARTICULATIONS[what]
+            add = b if b.startswith("\\") else "-" + b
+        elif what in _DYNAMICS:
+            add = "\\" + what
+            # one dynamic per note: another one is replaced
+            remove = [e for e in events if e[3].startswith("\\") and e[3][1:] in _DYNAMICS]
+        else:
+            add = _SPANS[what]
+            if what in ("cresc", "decresc"):  # one hairpin start per note
+                remove = [e for e in events if e[3] in _HAIRPINS]
+    attached = text[start:end]
+    for s_, e_, _, _ in sorted(remove, reverse=True):
+        attached = attached[:s_] + attached[e_:]
+    if add:
+        attached += add
+    return text[:start] + attached + text[end:]
 
 
 # --------------------------------------------------------------------------
@@ -453,6 +586,10 @@ def call(request_json):
             out, start = insert(text, req["pos"], req.get("keys", []), req.get("duration"),
                                 req.get("after", False))
             return json.dumps({"text": out, "start": start})
+        elif op == "toggle":
+            out = toggle(text, req["pos"], req["what"])
+        elif op == "marks":
+            return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":
             out = rel2abs(text)
         elif op == "notes":

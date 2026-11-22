@@ -300,6 +300,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         softKeyboard?.hide() // a pen tap shouldn't bring up the keyboard
     }
 
+    /** The marks on the selected note (articulations, dynamics, slurs…), as LilyTools.toggle names them. */
+    var selectedMarks by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(selectedOffset, text.text) {
+        val at = selectedOffset
+        selectedMarks = if (at == null || at >= text.text.length) emptySet()
+        else runCatching { tools.marks(text.text, at) }.getOrDefault(emptySet())
+    }
+
     /** Runs a structural edit on the selected item and applies the result as one text change. */
     fun edit(at: Int? = null, action: suspend (source: String, offset: Int) -> TextEdit) {
         val offset = at ?: selectedOffset ?: return
@@ -465,16 +473,24 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     onDot = { entryDot = !entryDot },
                     onRest = { entries.trySend(emptyList()) },
                     onUndo = ::undoLast,
-                ) else EditBar(
-                    selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
-                        ?.takeIf { text.text == renderedText },
-                    canUndo = undo.isNotEmpty(),
-                    onPitch = { p -> edit { src, off -> tools.setPitch(src, off, p) } },
-                    onStep = { by -> edit { src, off -> tools.step(src, off, by) } },
-                    onDuration = { d -> edit { src, off -> tools.setDuration(src, off, d) } },
-                    onDelete = { edit { src, off -> tools.delete(src, off) } },
-                    onUndo = ::undoLast,
-                )
+                ) else {
+                    val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
+                        ?.takeIf { text.text == renderedText }
+                    EditBar(
+                        selected = selected,
+                        canUndo = undo.isNotEmpty(),
+                        onPitch = { p -> edit { src, off -> tools.setPitch(src, off, p) } },
+                        onStep = { by -> edit { src, off -> tools.step(src, off, by) } },
+                        onDuration = { d -> edit { src, off -> tools.setDuration(src, off, d) } },
+                        onDelete = { edit { src, off -> tools.delete(src, off) } },
+                        onUndo = ::undoLast,
+                    )
+                    MarksBar(
+                        enabled = selected != null,
+                        on = selectedMarks,
+                        onToggle = { what -> edit { src, off -> tools.toggle(src, off, what) } },
+                    )
+                }
                 if (entering && !landscape) piano()
                 ScoreView(
                     document, lookup, if (playback != null) cursor else selection, ::onTap,
@@ -705,6 +721,38 @@ private fun Piano(low: Int, octaves: Int, onKey: (Int) -> Unit, modifier: Modifi
         }
     }
 }
+
+/** Articulations, dynamics, slurs, ties and hairpins for the selected note; those on it are filled. */
+@Composable
+private fun MarksBar(enabled: Boolean, on: Set<String>, onToggle: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for ((group, marks) in MARKS) {
+            Text(group, fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(start = 6.dp, end = 2.dp))
+            for ((what, label) in marks) {
+                val pad = PaddingValues(horizontal = 8.dp)
+                if (what in on) Button(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
+                else OutlinedButton(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
+            }
+        }
+    }
+}
+
+/** The marks bar's buttons: what LilyTools.toggle calls each mark, and its label. */
+private val MARKS = listOf(
+    "Marks" to listOf(
+        "staccato" to "•", "accent" to ">", "tenuto" to "–", "marcato" to "^",
+        "staccatissimo" to "▾", "fermata" to "fermata", "trill" to "tr",
+    ),
+    "Dynamics" to listOf("pp", "p", "mp", "mf", "f", "ff", "sfz").map { it to it },
+    "Lines" to listOf(
+        "slur-start" to "(", "slur-end" to ")", "tie" to "tie",
+        "cresc" to "cresc <", "decresc" to "dim >", "hairpin-end" to "end",
+    ),
+)
 
 /** Pitch, duration and delete buttons for the selected note (or rest). */
 @Composable

@@ -69,6 +69,7 @@ class MidiKeyboard(context: Context) {
         }
 
         override fun onDeviceRemoved(info: MidiDeviceInfo) {
+            android.util.Log.i(TAG, "removed ${name(info)} (id ${info.id})")
             if (isOwnDevice(info)) return
             if (info == _connected.value) disconnect()
             refresh()
@@ -101,6 +102,7 @@ class MidiKeyboard(context: Context) {
 
     fun connect(info: MidiDeviceInfo) {
         if (info == opening || info == _connected.value) return // already on its way
+        android.util.Log.i(TAG, "connect ${name(info)} (id ${info.id})")
         disconnect()
         opening = info
         _status.value = "Opening ${name(info)}…"
@@ -121,6 +123,7 @@ class MidiKeyboard(context: Context) {
     }
 
     fun disconnect() {
+        if (device != null || opening != null) android.util.Log.i(TAG, "disconnect ${_connected.value?.id ?: opening?.id}")
         opening = null
         runCatching { fromKeyboard?.close() }
         runCatching { toKeyboard?.close() }
@@ -203,6 +206,8 @@ class MidiKeyboard(context: Context) {
     }
 
     companion object {
+        private const val TAG = "MidiKeyboard"
+
         fun name(info: MidiDeviceInfo): String =
             info.properties.getString(MidiDeviceInfo.PROPERTY_NAME)
                 ?: info.properties.getString(MidiDeviceInfo.PROPERTY_PRODUCT) ?: "MIDI device ${info.id}"

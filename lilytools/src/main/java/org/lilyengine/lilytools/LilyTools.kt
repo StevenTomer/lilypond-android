@@ -70,6 +70,29 @@ class LilyTools(context: Context) {
         JSONObject().put("op", "delete").put("pos", text.codePointCount(0, offset)),
     )
 
+    /**
+     * Adds a mark to the note, chord or rest at [offset], or takes it off if
+     * it is there: an articulation ("staccato", "accent", "tenuto",
+     * "marcato", "staccatissimo", "portato", "fermata", "trill", "turn",
+     * "prall", "mordent", "upbow", "downbow"), a dynamic ("pp" … "ff",
+     * "sfz", "fp"…; it replaces another dynamic on the same note), or
+     * "slur-start", "slur-end", "cresc", "decresc", "hairpin-end", "tie".
+     * A note inside a chord means the chord.
+     */
+    suspend fun toggle(text: String, offset: Int, what: String): TextEdit = call(
+        text,
+        JSONObject().put("op", "toggle").put("pos", text.codePointCount(0, offset)).put("what", what),
+    )
+
+    /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
+    suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
+        val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val list = reply.getJSONArray("marks")
+        (0 until list.length()).map(list::getString).toSet()
+    }
+
     /** Transposes [start]..[end] (the whole text by default), e.g. from "c" to "d". */
     suspend fun transpose(text: String, from: String, to: String, start: Int = 0, end: Int = -1): TextEdit = call(
         text,
