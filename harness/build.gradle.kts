@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -13,13 +15,45 @@ android {
         minSdk = 28
         targetSdk = 37
         versionCode = 1
-        versionName = "0.0.1"
+        versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // LilyPond is only built for these (64-bit only: Guile bytecode is
         // compiled for 64-bit little-endian).
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        // -Plilyengine.abis=arm64-v8a builds a single-ABI APK for one device type.
+        val abis = (findProperty("lilyengine.abis") as String?)?.split(",")
+            ?: listOf("arm64-v8a", "x86_64")
+        ndk { abiFilters += abis }
     }
-    buildFeatures { compose = true }
+
+    // Release signing: the key lives outside the repository, in
+    // ~/.android-keys/lilyengine-release.properties (or the file named by the
+    // Gradle property lilyengine.signing). Without it, release builds are unsigned.
+    val signingFile = (findProperty("lilyengine.signing") as String?)?.let(::file)
+        ?: file("${System.getProperty("user.home")}/.android-keys/lilyengine-release.properties")
+    val signing = Properties().apply {
+        if (signingFile.exists()) signingFile.inputStream().use(::load)
+    }
+    signingConfigs {
+        if (signing.isNotEmpty()) {
+            create("release") {
+                storeFile = file(signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // A test app: no shrinking, so stack traces in reports stay readable.
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+        }
+    }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     packaging {
         // Executables must be extracted to nativeLibraryDir to be exec()-able.
         jniLibs { useLegacyPackaging = true }

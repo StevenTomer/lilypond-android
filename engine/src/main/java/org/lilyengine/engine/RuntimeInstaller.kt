@@ -28,7 +28,12 @@ internal class RuntimeInstaller(private val context: Context) {
         val version = bundledVersion()
         val root = File(base, version)
         val stamp = File(root, ".installed")
-        if (stamp.exists()) return root
+        if (stamp.exists()) {
+            // nativeLibraryDir moves to a new random path whenever the app is
+            // updated or reinstalled, so re-point the symlinks if needed.
+            linkExecutables(root)
+            return root
+        }
 
         // Remove older runtimes and any half-finished install.
         base.listFiles()?.forEach { it.deleteRecursively() }
@@ -82,8 +87,10 @@ internal class RuntimeInstaller(private val context: Context) {
         )) {
             val d = File(root, dir).apply { mkdirs() }
             val link = File(d, name)
+            val target = "$nativeDir/$lib"
+            if (runCatching { Os.readlink(link.path) }.getOrNull() == target) continue
             link.delete()
-            Os.symlink("$nativeDir/$lib", link.path)
+            Os.symlink(target, link.path)
         }
     }
 

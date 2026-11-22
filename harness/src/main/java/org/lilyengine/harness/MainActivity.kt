@@ -1,5 +1,6 @@
 package org.lilyengine.harness
 
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
@@ -9,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,6 +32,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -55,10 +58,15 @@ private fun Harness(engine: LilyPondEngine) {
     var log by remember { mutableStateOf("") }
     var page by remember { mutableStateOf<Bitmap?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var report by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(8.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
             Button(enabled = !busy, onClick = {
                 busy = true
                 scope.launch {
@@ -75,6 +83,29 @@ private fun Harness(engine: LilyPondEngine) {
             Button(enabled = !busy, onClick = {
                 scope.launch { log = runCatching { engine.version() }.getOrElse { it.toString() } }
             }) { Text("Version") }
+            Button(enabled = !busy, onClick = {
+                busy = true
+                report = null
+                page = null
+                scope.launch {
+                    log = "Running self-test…"
+                    val checks = SelfTest(engine).run { partial ->
+                        log = SelfTest.report(partial) + "\nRunning…"
+                    }
+                    report = SelfTest.report(checks)
+                    log = report!!
+                    busy = false
+                }
+            }) { Text("Self-test") }
+            report?.let { text ->
+                Button(onClick = {
+                    val send = Intent(Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(Intent.EXTRA_SUBJECT, "LilyPond engine self-test")
+                        .putExtra(Intent.EXTRA_TEXT, text)
+                    context.startActivity(Intent.createChooser(send, "Share report"))
+                }) { Text("Share") }
+            }
         }
         BasicTextField(
             value = source,
@@ -93,6 +124,7 @@ private fun Harness(engine: LilyPondEngine) {
             log,
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
+            lineHeight = 14.sp,
             modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
         )
     }
