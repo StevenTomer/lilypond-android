@@ -1,0 +1,89 @@
+# lilypond-android
+
+The real [GNU LilyPond](https://lilypond.org) engine (2.26, Guile 3) running natively
+inside an Android APK, with no Termux and no server. This repository is the foundation for
+a pen-first tablet LilyPond editor. Right now it contains:
+
+- `native/`: builds LilyPond and all its dependencies with the Android NDK.
+- `engine/`: an Android library (`LilyPondEngine`) that unpacks the runtime and runs LilyPond.
+- `harness/`: a throwaway test app (edit, render, view page 1, read the log) plus instrumented tests.
+
+## How it works
+
+**Build.** Every LilyPond source tarball ships upstream's own static-binary build scripts
+(`release/binaries/lib`). `native/android_overlay.py` adds an Android target to them,
+modeled on upstream's mingw cross-compilation. It subclasses `Config` and wraps a few
+per-package methods, and **it never modifies upstream files**. Dependency versions
+therefore come from whichever LilyPond release `native/build.py` points at.
+
+**Runtime.** LilyPond runs as a child process. It cannot run in-process: it keeps
+global state, calls `exit()`, and Guile's GC owns the whole process.
+
+- The executables ship as `jniLibs/<abi>/liblilypond.so` and `libgs.so` (Ghostscript).
+  Android installs them into `nativeLibraryDir`, the only place an app may `exec()` from
+  on Android 10 and later.
+- Everything else ships as `assets/lilypond-runtime.zip`: Scheme and `.ly` files,
+  Guile's library and bytecode, LilyPond's bytecode, and fonts. This is upstream's binary
+  package layout.
+- On first use the engine unpacks the zip into `filesDir/lilypond/<version>/` and creates
+  two symlinks: `bin/lilypond` → `liblilypond.so` and `libexec/gs` → `libgs.so`.
+  LilyPond derives its data prefix from `argv[0]`, so upstream's own relocation files
+  then set up Guile, Fontconfig and `PATH`.
+
+## Building
+
+Requirements:
+
+- Ubuntu with the packages from upstream's playbook (`release/binaries/ansible`):
+  `bison flex fontforge gcc g++ gettext gperf m4 make meson ninja-build pkgconf
+  python3-packaging t1utils texlive-base texlive-metapost`.
+- Android NDK r30. The default path is `~/Android/Sdk/ndk/30.0.16248370`; override it
+  with `--ndk` or `ANDROID_NDK`.
+
+```sh
+cd native
+./build.py host-deps                    # native deps (Guile bootstraps itself: slow, once)
+./build.py host-lilypond                # native LilyPond: bytecode + fonts for the cross build
+./build.py deps     --abi arm64-v8a     # cross-compile dependencies
+./build.py lilypond --abi arm64-v8a     # cross-compile LilyPond
+./build.py package  --abi arm64-v8a     # -> out/jniLibs/<abi>/, out/assets/
+# repeat the last three with --abi x86_64 for the emulator
+cd .. && ./gradlew :harness:installDebug         # or :harness:connectedDebugAndroidTest
+```
+
+Device checks that run without the app:
+
+- `native/tools/device-test-guile.sh [abi]`: runs Guile on a device.
+- `native/tools/device-test-lilypond.sh [abi] [file.ly]`: renders a score in
+  `/data/local/tmp` and pulls the PDF and PNG back.
+
+### Updating LilyPond
+
+1. Bump `LILYPOND_VERSION` in `native/build.py`.
+2. Delete `native/build/`.
+3. Rebuild.
+
+Only `android_overlay.py` is ours to maintain.
+
+## Android-specific fixes (all in `native/android_overlay.py` and `native/shims/`)
+
+| Problem | Fix |
+|---|---|
+| Guile cannot bootstrap when cross-compiling | `GUILE_FOR_BUILD` = the host Guile of the same version (as for mingw) |
+| Autoconf cannot run test programs for Bionic | cache answers for posix_spawn, complex, GC functions (from Termux) |
+| Bionic `<malloc.h>` uses `FILE` undeclared under gnulib | `shims/include/malloc.h` (from Termux) |
+| NDK ≥ r26 declares `timezone_t`, but `mktime_z`/`localtime_rz` only exist from API 35 | `shims/include/time.h` maps them onto `mktime`/`timegm`/`localtime_r`/`gmtime_r` |
+| Termux's `ac_cv_search_clock_getcpuclockid=false` puts `false` into `guile-3.0.pc` | use `=no` |
+| Bionic iconv lacks ISO-8859-1, which Guile uses for narrow strings → abort at boot | enable upstream's GNU libiconv recipe (as for macOS/mingw) |
+| Bionic has no libintl, and GLib needs one | enable upstream's gettext recipe |
+| Ghostscript looks for its generated `arch.h` in the source directory when cross-building out-of-tree | `--with-arch_h=<build>/arch-config/arch_autoconf.h` |
+| `--enable-static-gxx` assumes GCC's libstdc++ | add `-static-libstdc++` (libc++) to LilyPond's link |
+| Cross compiler doesn't see `/usr/include/FlexLexer.h` | copy it (as upstream does for mingw) |
+| Python is not needed by the engine | disabled for Android (CPython has official Android support for later) |
+| Host build on glibc ≥ 2.43 + GCC 15: gnulib redeclares C23 `_Generic` functions | parenthesize declared names in gnulib's headers |
+
+## Licensing
+
+LilyPond is GPLv3+. Ghostscript is AGPLv3. The APK as a whole is therefore distributed
+under the AGPLv3, and the license files of every bundled component are included in the
+runtime (`licenses/`).

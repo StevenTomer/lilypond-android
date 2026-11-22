@@ -1,0 +1,12 @@
+# Native build outputs and downloaded sources
+native/downloads/
+native/src/
+native/build/
+native/out/
+__pycache__/
+# Android/Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/

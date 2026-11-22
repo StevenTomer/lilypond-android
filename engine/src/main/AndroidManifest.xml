@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- LilyPond and Ghostscript are executables shipped as lib*.so so that
+         they are installed into nativeLibraryDir, the only app location from
+         which exec() is allowed on Android 10+. That requires extraction. -->
+    <application android:extractNativeLibs="true" />
+</manifest>
