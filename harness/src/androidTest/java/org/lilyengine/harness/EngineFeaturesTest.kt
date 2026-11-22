@@ -28,6 +28,21 @@ class EngineFeaturesTest {
     }
 
     @Test
+    fun windowEngravesOnlyTheBarsAskedFor() = runBlocking {
+        val src = pianoPiece(40) // 40 bars, 2 pages
+        val full = engine.render(src)
+        assertTrue(full.log, full.success)
+        val r = engine.render(src, LilyPondEngine.Options(window = "20" to "23"))
+        assertTrue(r.log, r.success)
+        val moments = r.scoreMap!!.grobs.filter { it.type == "NoteHead" }.mapNotNull { it.momentValue }
+        assertTrue(moments.isNotEmpty())
+        assertTrue("moments ${moments.min()}..${moments.max()}", moments.all { it >= 20.0 && it < 23.0 })
+        assertTrue("window ${r.elapsedMillis} ms vs full ${full.elapsedMillis} ms", r.elapsedMillis < full.elapsedMillis)
+        // No warnings or errors from the windowing itself.
+        assertTrue(r.log, r.diagnostics.isEmpty())
+    }
+
+    @Test
     fun scoreMapSeparatesVoices() = runBlocking {
         val r = engine.render(POLY_SAMPLE)
         assertTrue(r.log, r.success)

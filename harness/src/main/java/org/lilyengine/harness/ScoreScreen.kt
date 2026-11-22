@@ -102,30 +102,67 @@ fun ScoreScreen(engine: LilyPondEngine) {
         }
     }
 
-    // Re-render after typing pauses; a newer edit cancels a render in progress.
-    LaunchedEffect(Unit) {
-        snapshotFlow { text.text }.distinctUntilChanged().debounce(600).collectLatest { source ->
-            status = "Rendering…"
-            val r = engine.render(source, LilyPondEngine.Options(midi = true, scoreMap = true))
-            error = r.diagnostics.firstOrNull { it.severity == Diagnostic.Severity.ERROR }
-            val pdf = r.outputs.firstOrNull()
-            if (!r.success || pdf == null) {
-                status = "LilyPond failed" + (error?.let { ": line ${it.line}: ${it.message}" } ?: "")
-                return@collectLatest
-            }
-            val newDoc = ScoreDocument.open(pdf)
-            document?.close()
-            document = newDoc
-            lookup = r.scoreMap?.let { ScoreLookup(it) }
-            renderedText = source
-            midi = r.midi.firstOrNull()
-            selection = selectedOffset?.let { off ->
-                val (line, char) = SourcePositions.locationOf(source, off)
-                lookup?.objectsAtSource(line, char, "score.ly")
-            }.orEmpty()
-            status = "${newDoc.pageCount} page(s), ${r.elapsedMillis} ms" +
-                (error?.let { " — error on line ${it.line}: ${it.message}" } ?: "")
+    /** How long the last full render took: long scores get a fast preview after an edit. */
+    var lastFullMillis by remember { mutableStateOf(0L) }
+    var longSample by remember { mutableStateOf(false) }
+    /** Set by an edit: the text it produced and the moment of the edited note. */
+    val pendingEdit = remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    /** Shows a render's PDF and score map; returns false if it failed. */
+    suspend fun show(r: LilyPondEngine.Result, source: String): Boolean {
+        error = r.diagnostics.firstOrNull { it.severity == Diagnostic.Severity.ERROR }
+        val pdf = r.outputs.firstOrNull()
+        if (!r.success || pdf == null) {
+            status = "LilyPond failed" + (error?.let { ": line ${it.line}: ${it.message}" } ?: "")
+            return false
         }
+        val newDoc = ScoreDocument.open(pdf)
+        document?.close()
+        document = newDoc
+        lookup = r.scoreMap?.let { ScoreLookup(it) }
+        renderedText = source
+        selection = selectedOffset?.let { off ->
+            val (line, char) = SourcePositions.locationOf(source, off)
+            lookup?.objectsAtSource(line, char, "score.ly")
+        }.orEmpty()
+        // Keep the edited note in view: the preview and the whole score put it on different pages.
+        val l = lookup
+        selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }?.let { g ->
+            val h = newDoc.pageSizes.getOrNull(g.page - 1)?.second ?: return@let
+            if (l != null) viewState.reveal(g.page, l.pageRect(g)[1] / h, viewHeight)
+        }
+        return true
+    }
+
+    // Re-render after typing pauses (at once after an edit button); a newer
+    // edit cancels a render in progress. After an edit to a long score, the
+    // bars around the edit are engraved first, then the whole score.
+    LaunchedEffect(Unit) {
+        snapshotFlow { text.text }
+            .distinctUntilChanged()
+            .debounce { if (pendingEdit.value?.first == it) 0L else 600L }
+            .collectLatest { source ->
+                val edit = pendingEdit.value?.takeIf { it.first == source }
+                pendingEdit.value = null
+                val l = lookup
+                if (edit != null && l != null && lastFullMillis > PREVIEW_THRESHOLD_MS) {
+                    status = "Engraving the bars around the edit…"
+                    val window = l.windowAround(edit.second)
+                    val p = engine.render(source, LilyPondEngine.Options(midi = false, scoreMap = true, window = window))
+                    if (show(p, source)) {
+                        status = "Preview: bars around the edit (${p.elapsedMillis} ms); whole score in progress…"
+                    }
+                } else {
+                    status = "Rendering…"
+                }
+                val r = engine.render(source, LilyPondEngine.Options(midi = true, scoreMap = true))
+                if (show(r, source)) {
+                    lastFullMillis = r.elapsedMillis
+                    midi = r.midi.firstOrNull()
+                    status = "${document?.pageCount} page(s), ${r.elapsedMillis} ms" +
+                        (error?.let { " — error on line ${it.line}: ${it.message}" } ?: "")
+                }
+            }
     }
 
     fun selectFromCursor(value: TextFieldValue) {
@@ -167,6 +204,11 @@ fun ScoreScreen(engine: LilyPondEngine) {
                 if (!e.isEmpty) {
                     undo.addLast(before)
                     val after = e.applyTo(before)
+                    val moment = (lookup?.objectsAtSource(
+                        SourcePositions.locationOf(before, offset).first,
+                        SourcePositions.locationOf(before, offset).second, "score.ly",
+                    ).orEmpty() + selection).firstNotNullOfOrNull { it.moment }
+                    if (moment != null) pendingEdit.value = after to moment
                     // The item still starts at the same offset unless the edit removed it.
                     val keep = offset.coerceAtMost(after.length)
                     text = TextFieldValue(after, TextRange(keep, SourcePositions.tokenEnd(after, keep)))
@@ -200,6 +242,11 @@ fun ScoreScreen(engine: LilyPondEngine) {
                 ) {
                     Text(status, fontSize = 13.sp, modifier = Modifier.weight(1f).padding(top = 10.dp))
                     error?.let { e -> TextButton(onClick = { jumpTo(e) }) { Text("Go to error") } }
+                    TextButton(onClick = {
+                        undo.clear(); selectedOffset = null; selection = emptyList()
+                        longSample = !longSample
+                        text = TextFieldValue(if (longSample) LONG_SAMPLE else SCORE_SAMPLE)
+                    }) { Text(if (longSample) "Short sample" else "Long sample") }
                     Button(enabled = midi != null, onClick = {
                         val current = player.value
                         if (current != null) {
@@ -333,6 +380,12 @@ private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?) {
         Text(parts.joinToString(" · "), fontSize = 13.sp)
     }
 }
+
+/** Above this, an edit first engraves only the bars around it (see [ScoreLookup.windowAround]). */
+private const val PREVIEW_THRESHOLD_MS = 1500L
+
+/** 400 bars of piano music with two voices in the right hand: about 15 pages. */
+private val LONG_SAMPLE = pianoPiece(400)
 
 /** Piano music with two voices in the right hand, and a chord, over a few systems. */
 private val SCORE_SAMPLE = """

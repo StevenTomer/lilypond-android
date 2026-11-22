@@ -142,6 +142,8 @@ global = { \key c \major \time 4/4 }
 """
 }
 
+internal fun pianoPiece(bars: Int): String = piano(bars)
+
 private fun piano(bars: Int): String {
     val rh = "<< { c''8 d'' e'' f'' g''4 e''8( c'') } \\\\ { e'2 g'4 a' } >> | <e' g' c''>4-. r8 b'16 c'' d''4\\f( c'') |"
     val lh = "c4 <e g c'> g, <d g b> | <c e g>2 g,4\\p c |"

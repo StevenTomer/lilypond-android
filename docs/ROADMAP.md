@@ -61,6 +61,18 @@ This plan covers the pieces needed before the editor and the editor phases after
     cursor to highlight the note, Play for MIDI, and Go to error.
   - Still to do: lasso and range selection, the hover ghost note (the pitch under the
     pen), tiled rendering for deep zoom (pages are drawn sharp up to 2.5x, then scaled).
+- **M1 fast edit view, done (differently than planned):** `Options.window` engraves only a
+  stretch of the music. The settings file `window.ly` wraps each score the way LilyPond's
+  own `showFirstLength` does: the music is cut off at the window's end, and typesetting is
+  off before its start. No python-ly extraction was needed, and the score map keeps
+  working in the preview. `ScoreLookup.windowAround` picks the bar before the edit and
+  two after, aligned to printed bar lines.
+  - Timings: on the host, the 400-bar piece takes 5.1 s in full and 1.3 s windowed. On the
+    emulator, 13.7 s in full and 2.1 s windowed.
+  - The Score tab: after an edit to a score whose last full render took over 1.5 s, the
+    preview shows first, then the whole score renders and scrolls back to the edited note.
+- **E2 start:** key-aware step up/down (`lilyedit.step`, all church modes), and dragging
+  a selected note head with the pen shows a ghost note at the target position.
 - **M3 (`:lilytools`), first cut done:**
   - Chaquopy runs in an Android library module; python-ly 0.9.10 is pinned.
   - `lilyedit.py` has set pitch, set duration, delete, transpose and rel2abs. python-ly's

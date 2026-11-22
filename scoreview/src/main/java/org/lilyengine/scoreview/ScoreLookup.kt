@@ -74,7 +74,33 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
         return byOrigin[origin].orEmpty()
     }
 
+    /**
+     * A stretch of music around [moment] for a fast preview, as start and end
+     * moments (rational strings, for [org.lilyengine.engine.LilyPondEngine.Options.window]):
+     * from [barsBefore] bars before the bar containing [moment] to [barsAfter]
+     * bars after it, aligned to the bar lines LilyPond printed. Past the last
+     * bar line the end is open (the engine stops at the end of the music).
+     */
+    fun windowAround(moment: String, barsBefore: Int = 1, barsAfter: Int = 2): Pair<String, String> {
+        val m = rational(moment)
+        val bars = (map.grobs.filter { it.type == "BarLine" }.mapNotNull { it.moment } + "0")
+            .distinctBy { rational(it) }
+            .sortedBy { rational(it) }
+        val i = bars.indexOfLast { rational(it) <= m }.coerceAtLeast(0)
+        val start = bars[(i - barsBefore).coerceAtLeast(0)]
+        val end = bars.getOrNull(i + 1 + barsAfter) ?: OPEN_END
+        return start to end
+    }
+
     companion object {
+        /** Window end meaning "to the end of the music". */
+        const val OPEN_END = "1000000"
+
+        private fun rational(s: String): Double {
+            val slash = s.indexOf('/')
+            return if (slash < 0) s.toDouble() else s.substring(0, slash).toDouble() / s.substring(slash + 1).toDouble()
+        }
+
         /** Grob types a tap can select, in order of preference. */
         val SELECTABLE = listOf(
             "NoteHead", "Rest", "MultiMeasureRest", "Accidental", "Dots",

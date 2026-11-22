@@ -82,6 +82,14 @@ class ScoreLookupTest {
     }
 
     @Test
+    fun windowAroundIsBarAligned() {
+        // The fixture has one printed bar line, at moment 1 (2 bars of 4/4).
+        assertEquals("0" to "1", lookup.windowAround("1/2", barsBefore = 1, barsAfter = 0))
+        assertEquals("0" to ScoreLookup.OPEN_END, lookup.windowAround("3/2"))
+        assertEquals("1" to ScoreLookup.OPEN_END, lookup.windowAround("3/2", barsBefore = 0))
+    }
+
+    @Test
     fun sourcePositionsRoundTrip() {
         val text = "\\version \"2.26.0\"\n{ c'4 é d'4 }\n"
         val offset = SourcePositions.offsetOf(text, 2, 8)

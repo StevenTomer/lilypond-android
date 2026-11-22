@@ -45,6 +45,15 @@ class LilyPondEngine(context: Context) {
         val midi: Boolean = true,
         /** Write a [ScoreMap] (PDF output only). */
         val scoreMap: Boolean = true,
+        /**
+         * Engrave only this stretch of the music, as start and end moments in
+         * whole notes (rational strings like "199" or "797/4", as in the
+         * [ScoreMap]). Much faster for long scores: the music after the end
+         * isn't even interpreted. Score map moments stay those of the whole
+         * piece. No MIDI is written for a window (it would only hold the
+         * window's notes, and LilyPond's performers complain).
+         */
+        val window: Pair<String, String>? = null,
         /** Extra directories searched by \include. */
         val includeDirs: List<File> = emptyList(),
         val timeoutSeconds: Long = 300,
@@ -128,7 +137,11 @@ class LilyPondEngine(context: Context) {
         val args = buildList {
             add(options.format.flag)
             if (options.format == Format.PNG) add("-dresolution=${options.resolutionDpi}")
-            if (options.midi) add("-dinclude-settings=${runtime.settingsFile("midi.ly").path}")
+            if (options.midi && options.window == null) add("-dinclude-settings=${runtime.settingsFile("midi.ly").path}")
+            options.window?.let { (start, end) ->
+                add("-dinclude-settings=${runtime.settingsFile("window.ly").path}")
+                env["LILYENGINE_WINDOW"] = "$start $end"
+            }
             if (options.scoreMap && options.format == Format.PDF) {
                 add("-dinclude-settings=${runtime.settingsFile("scoremap.ly").path}")
                 env["LILYENGINE_SCOREMAP"] = mapFile.path
