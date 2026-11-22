@@ -3,7 +3,9 @@ package org.lilyengine.engine
 /** A LilyPond error or warning tied to a position in the input file. */
 data class Diagnostic(
     val severity: Severity,
+    /** 1-based. */
     val line: Int,
+    /** 1-based, as LilyPond prints it (the score map's `char` is 0-based). */
     val column: Int,
     val message: String,
 ) {

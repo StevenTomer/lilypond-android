@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun Root(engine: LilyPondEngine) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    val tabs = listOf("Test", "Benchmark", "MIDI")
+    val tabs = listOf("Test", "Score", "Benchmark", "MIDI")
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         TabRow(selectedTabIndex = tab) {
             tabs.forEachIndexed { i, title ->
@@ -69,7 +69,8 @@ private fun Root(engine: LilyPondEngine) {
         Box(Modifier.weight(1f)) {
             when (tab) {
                 0 -> Harness(engine)
-                1 -> BenchmarkScreen(engine)
+                1 -> ScoreScreen(engine)
+                2 -> BenchmarkScreen(engine)
                 else -> MidiScreen()
             }
         }

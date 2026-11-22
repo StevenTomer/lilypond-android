@@ -47,6 +47,20 @@ This plan covers the pieces needed before the editor and the editor phases after
     extracts the bars around the edit, converts them to absolute pitches, and adds the
     clef, key and time signature in effect there.
   - Tablet numbers: pending (the harness has a Benchmark tab).
+- **M2 (`:scoreview`), first cut done:**
+  - Pages are drawn with Android's own `PdfRenderer` instead of MuPDF: hit-testing comes
+    from the score map, so MuPDF's extra features aren't needed, and it would add about
+    7 MB per ABI. Switching later stays easy, because the view only needs page bitmaps.
+  - `ScoreLookup`: tap to object (nearest within 0.6 staff spaces; note heads beat
+    articulations), object to source, and cursor to objects. Both directions tell the
+    voices of a `\\` passage apart. Unit tests run on the JVM.
+  - `ScoreView` (Compose): pages under one another, pinch zoom, sideways pan when zoomed,
+    selection drawn in voice colours, and a pen-hover outline.
+  - The harness **Score** tab: editable source, auto-render 0.6 s after typing stops
+    (a newer edit cancels the running render), tap a note to select its source, move the
+    cursor to highlight the note, Play for MIDI, and Go to error.
+  - Still to do: lasso and range selection, the hover ghost note (the pitch under the
+    pen), tiled rendering for deep zoom (pages are drawn sharp up to 2.5x, then scaled).
 - **M3 spike (`:pyspike`):**
   - Chaquopy 17.2 + Python 3.14 + python-ly 0.9.10 run on Android with AGP 9.5.
   - Python starts in 0.9 s; the python-ly import takes 80 ms.

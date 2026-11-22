@@ -141,7 +141,7 @@ jobs:
           echo "SIGNING_ARGS=-Plilyengine.signing=$RUNNER_TEMP/keys/release.properties" >> "$GITHUB_ENV"
 
       - name: Unit tests and lint
-        run: ./gradlew :engine:testDebugUnitTest :engine:lintDebug :harness:lintDebug
+        run: ./gradlew :engine:testDebugUnitTest :scoreview:testDebugUnitTest :engine:lintDebug :scoreview:lintDebug :harness:lintDebug
 
       - name: Build APKs
         run: |
