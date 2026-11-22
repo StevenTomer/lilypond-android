@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- MIDI keyboard input (USB / Bluetooth); the app works without it. -->
+    <uses-feature android:name="android.software.midi" android:required="false" />
     <application
         android:label="LilyPond Test"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">

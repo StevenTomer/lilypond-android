@@ -1,6 +1,5 @@
 package org.lilyengine.harness
 
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
@@ -9,6 +8,11 @@ import android.os.ParcelFileDescriptor
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -48,7 +52,27 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val engine = LilyPondEngine(this)
-        setContent { MaterialTheme { Harness(engine) } }
+        setContent { MaterialTheme { Root(engine) } }
+    }
+}
+
+@Composable
+private fun Root(engine: LilyPondEngine) {
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val tabs = listOf("Test", "Benchmark", "MIDI")
+    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+        TabRow(selectedTabIndex = tab) {
+            tabs.forEachIndexed { i, title ->
+                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
+            }
+        }
+        Box(Modifier.weight(1f)) {
+            when (tab) {
+                0 -> Harness(engine)
+                1 -> BenchmarkScreen(engine)
+                else -> MidiScreen()
+            }
+        }
     }
 }
 
@@ -62,7 +86,7 @@ private fun Harness(engine: LilyPondEngine) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(8.dp)) {
+    Column(Modifier.fillMaxSize().padding(8.dp)) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -98,13 +122,7 @@ private fun Harness(engine: LilyPondEngine) {
                 }
             }) { Text("Self-test") }
             report?.let { text ->
-                Button(onClick = {
-                    val send = Intent(Intent.ACTION_SEND)
-                        .setType("text/plain")
-                        .putExtra(Intent.EXTRA_SUBJECT, "LilyPond engine self-test")
-                        .putExtra(Intent.EXTRA_TEXT, text)
-                    context.startActivity(Intent.createChooser(send, "Share report"))
-                }) { Text("Share") }
+                Button(onClick = { shareText(context, "LilyPond engine self-test", text) }) { Text("Share") }
             }
         }
         BasicTextField(

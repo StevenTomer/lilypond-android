@@ -26,6 +26,36 @@ Handwriting source text and drawing notes by hand are out of scope.
 
 This plan covers the pieces needed before the editor and the editor phases after them.
 
+## Status (2026-11-22)
+- **M0:**
+  - CI is green: native build in 47 min uncached, app, emulator tests on API 30 and 35.
+  - The update test passed: 2.27.5 built and passed all tests with no source changes.
+  - Still open: the app name and package id.
+- **M1 (engine):**
+  - Done: MIDI for every score, the score map (voices, chords, page boxes exact to
+    LilyPond's PDF links), `renderFile` with includes, cancellation.
+  - Benchmark on the emulator:
+    - startup 0.5 s
+    - 1-page chorale 1.0 s
+    - 15-page piano piece 11 s (+25% with score map and MIDI)
+    - 3-page orchestral score 3 s
+
+    Engraving dominates on long scores, so a warm render server would save little.
+    `showLastLength` only gets the 15-page piece down to 4.3 s, because LilyPond still
+    interprets all the music.
+  - **Change:** the fast edit view renders an *extracted passage* instead. python-ly
+    extracts the bars around the edit, converts them to absolute pitches, and adds the
+    clef, key and time signature in effect there.
+  - Tablet numbers: pending (the harness has a Benchmark tab).
+- **M3 spike (`:pyspike`):**
+  - Chaquopy 17.2 + Python 3.14 + python-ly 0.9.10 run on Android with AGP 9.5.
+  - Python starts in 0.9 s; the python-ly import takes 80 ms.
+  - rel2abs handles the `\\` case exactly as LilyPond does. Transposition keeps
+    formatting and changes the key signature.
+  - Cost: about +20 MB per ABI.
+- **M5:** the harness has a MIDI tab (device list, notes and chords as LilyPond, delivery
+  delay, test chord to the keyboard), waiting for the DGX-670 test.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

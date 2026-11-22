@@ -107,6 +107,9 @@ exists.
 2. Delete `native/build/`.
 3. Rebuild.
 
+Tested on 2026-11-22 with 2.27.5: it built for both ABIs and passed every instrumented
+test with no source changes.
+
 To try a release without touching the default build, pass `--lilypond-version X.Y.Z
 --build-dir <dir> --out <dir>` to every `build.py` command, and build the APK with
 `-Plilyengine.nativeOut=<dir>`.

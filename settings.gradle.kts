@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "lilypond-android"
 include(":engine", ":harness")
+// Throwaway spike: embedded Python (Chaquopy) + python-ly. Not built by CI.
+include(":pyspike")
