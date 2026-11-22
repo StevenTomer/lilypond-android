@@ -79,6 +79,9 @@ import org.lilyengine.scoreview.rememberScoreViewState
 import org.lilyengine.scoreview.voiceColor
 import org.lilyengine.midi.ChordCollector
 import org.lilyengine.midi.MidiKeyboard
+import org.lilyengine.midi.MidiFile
+import org.lilyengine.midi.MidiPlayer
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.collectAsState
@@ -106,7 +109,12 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
     val softKeyboard = LocalSoftwareKeyboardController.current
-    val player = remember { mutableStateOf<MediaPlayer?>(null) }
+    /** What is playing, if anything; the cursor shows the notes sounding in it. */
+    var playback by remember { mutableStateOf<Playback?>(null) }
+    var cursor by remember { mutableStateOf<List<Grob>>(emptyList()) }
+    /** With a keyboard connected: play through it rather than the tablet's speaker. */
+    var playOnKeyboard by remember { mutableStateOf(true) }
+    val canSend by keyboard.canSend.collectAsState()
     val context = LocalContext.current
     val tools = remember { LilyTools(context) }
     /** Source offset of the selected note or rest; the selection follows it across re-renders. */
@@ -117,7 +125,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     LaunchedEffect(Unit) { runCatching { tools.start() } }
     DisposableEffect(Unit) {
         onDispose {
-            player.value?.release()
+            playback?.stop()
             document?.close()
         }
     }
@@ -295,6 +303,22 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         }
     }
 
+    // The playback cursor: the notes sounding now, in every voice, kept in view.
+    LaunchedEffect(playback) {
+        val p = playback ?: return@LaunchedEffect
+        while (p.active) {
+            val m = p.file.wholeNotes(p.file.tick(p.positionMicros))
+            val l = lookup
+            val now = l?.soundingAt(m).orEmpty()
+            cursor = now
+            val top = now.minWithOrNull(compareBy<Grob>({ it.page }, { -it.bbox[3] }))
+            val h = top?.let { document?.pageSizes?.getOrNull(it.page - 1)?.second }
+            if (top != null && h != null && l != null) viewState.reveal(top.page, l.pageRect(top)[1] / h, viewHeight)
+            delay(33)
+        }
+        if (playback === p) { playback = null; cursor = emptyList() }
+    }
+
     fun undoLast() {
         val previous = undo.removeLastOrNull() ?: return
         text = TextFieldValue(previous, TextRange(selectedOffset?.coerceAtMost(previous.length) ?: 0))
@@ -349,18 +373,20 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         longSample = !longSample
                         text = TextFieldValue(if (longSample) LONG_SAMPLE else SCORE_SAMPLE)
                     }) { Text(if (longSample) "Short sample" else "Long sample") }
-                    Button(enabled = midi != null, onClick = {
-                        val current = player.value
+                    if (canSend) TextButton(onClick = { playOnKeyboard = !playOnKeyboard }) {
+                        Text(if (playOnKeyboard) "Sound: keyboard" else "Sound: tablet")
+                    }
+                    Button(enabled = midi != null || playback != null, onClick = {
+                        val current = playback
                         if (current != null) {
-                            current.release(); player.value = null
+                            current.stop(); playback = null; cursor = emptyList()
                         } else midi?.let { f ->
-                            player.value = MediaPlayer().apply {
-                                setDataSource(f.path)
-                                setOnCompletionListener { it.release(); player.value = null }
-                                prepare(); start()
-                            }
+                            val start = selection.firstNotNullOfOrNull { it.momentValue }
+                            playback = runCatching {
+                                Playback.start(f, start, if (playOnKeyboard && canSend) keyboard else null)
+                            }.onFailure { status = "Can't play: ${it.message}" }.getOrNull()
                         }
-                    }) { Text(if (player.value != null) "Stop" else "Play") }
+                    }) { Text(if (playback != null) "Stop" else if (selection.isNotEmpty()) "Play from here" else "Play") }
                 }
                 Text(status, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
                 SelectionInfo(selection, lookup)
@@ -386,7 +412,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 )
                 if (entering && !landscape) piano()
                 ScoreView(
-                    document, lookup, selection, ::onTap,
+                    document, lookup, if (playback != null) cursor else selection, ::onTap,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
                     state = viewState,
                     onDragSteps = { g, steps ->
@@ -428,6 +454,50 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             Column(Modifier.fillMaxSize()) {
                 score(Modifier.weight(0.6f).fillMaxWidth())
                 editor(Modifier.weight(0.4f).fillMaxWidth())
+            }
+        }
+    }
+}
+
+/**
+ * A MIDI file playing, through a MIDI keyboard ([MidiPlayer]) or the
+ * tablet's own synthesizer ([MediaPlayer]), from a point in the music.
+ */
+private class Playback private constructor(
+    val file: MidiFile,
+    private val sequencer: MidiPlayer?,
+    private val media: MediaPlayer?,
+) {
+    @Volatile private var stopped = false
+
+    val active: Boolean get() = !stopped && (sequencer?.playing ?: runCatching { media!!.isPlaying }.getOrDefault(false))
+
+    val positionMicros: Long
+        get() = sequencer?.positionMicros ?: runCatching { media!!.currentPosition * 1000L }.getOrDefault(0L)
+
+    fun stop() {
+        if (stopped) return
+        stopped = true
+        sequencer?.stop()
+        media?.release()
+    }
+
+    companion object {
+        /** Starts at [fromWholeNotes] into the music (null: the start), on [keyboard] if given. */
+        fun start(midi: java.io.File, fromWholeNotes: Double?, keyboard: MidiKeyboard?): Playback {
+            val file = MidiFile.read(midi)
+            val from = fromWholeNotes?.let { file.micros((it * 4 * file.division).toLong()) } ?: 0L
+            return if (keyboard != null) {
+                val s = MidiPlayer(file, { keyboard.send(it) })
+                s.start(from)
+                Playback(file, s, null)
+            } else {
+                val mp = MediaPlayer()
+                mp.setDataSource(midi.path)
+                mp.prepare()
+                if (from > 0) mp.seekTo((from / 1000).toInt())
+                mp.start()
+                Playback(file, null, mp)
             }
         }
     }

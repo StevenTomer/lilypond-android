@@ -114,6 +114,15 @@ This plan covers the pieces needed before the editor and the editor phases after
     as played in `\relative` and absolute music, and in either voice of `\\`.
   - Still to do: the hands-on test with the DGX-670, and a virtual MIDI device for
     instrumented tests.
+- **M6 (0.9.0):**
+  - `MidiFile` reads LilyPond's MIDI (tracks merged, tempo map), and `MidiPlayer` plays
+    it to the keyboard on a timing thread, releasing sounding notes when stopped.
+  - The Score tab plays through the keyboard when one is connected ("Sound: keyboard" /
+    "Sound: tablet"), from the selected note if there is one.
+  - A playback cursor highlights the notes and rests sounding in every voice
+    (`ScoreLookup.soundingAt`) and keeps them in view.
+  - Limits: MIDI ticks are mapped to moments directly, so repeats unfolded only in MIDI
+    and grace notes put the cursor off. FluidSynth is still to come.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

@@ -110,4 +110,23 @@ class ScoreLookupTest {
         assertEquals("\\fermata", tok("\\fermata\\p"))
         assertEquals("r4", tok("r4|"))
     }
+
+    @Test
+    fun durationsInWholeNotes() {
+        assertEquals(0.375, ScoreLookup.durationLength("4.")!!, 1e-9)
+        assertEquals(1.0 / 12, ScoreLookup.durationLength("8*2/3")!!, 1e-9)
+        assertEquals(2.0, ScoreLookup.durationLength("\\breve")!!, 1e-9)
+        assertEquals(0.4375, ScoreLookup.durationLength("4..")!!, 1e-9)
+    }
+
+    @Test
+    fun soundingNotesInBothVoices() {
+        fun names(m: Double) = lookup.soundingAt(m).filter { it.type == "NoteHead" }.map { it.pitch!!.name }.sorted()
+        assertEquals(listOf("c'", "c''"), names(0.0))
+        assertEquals(listOf("c'", "e''"), names(0.3)) // voice 2's half note still sounds
+        assertEquals(listOf("e''", "g'"), names(0.8))
+        assertEquals(listOf("b'", "d''", "g'"), names(1.2)) // the chord
+        assertEquals(listOf("fis'"), names(1.8))
+        assertTrue(lookup.soundingAt(1.6).any { it.type == "Rest" })
+    }
 }

@@ -92,7 +92,53 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
         return start to end
     }
 
+    /** Notes and rests with their start and end, in whole notes, sorted by start. */
+    private val timed: List<Triple<Double, Double, Grob>> by lazy {
+        map.grobs.filter { it.book == book && (it.type == "NoteHead" || it.type == "Rest") }
+            .mapNotNull { g ->
+                val start = g.momentValue ?: return@mapNotNull null
+                if (g.graceMoment?.let { rational(it) != 0.0 } == true) return@mapNotNull null // grace notes
+                Triple(start, start + (g.duration?.let(::durationLength) ?: 0.0), g)
+            }
+            .sortedBy { it.first }
+    }
+
+    /**
+     * The notes and rests sounding at [wholeNotes] from the start, in every
+     * voice: for a playback cursor. (Positions in the music, not the MIDI
+     * file: for music with repeats unfolded only in MIDI they differ.)
+     */
+    fun soundingAt(wholeNotes: Double): List<Grob> {
+        val end = timed.binarySearchBy(wholeNotes + 1e-9) { it.first }.let { if (it < 0) -it - 1 else it }
+        // Notes started before; a long one may have started well before, so look back far enough.
+        return timed.subList(0, end).asReversed().asSequence()
+            .takeWhile { wholeNotes - it.first < MAX_NOTE_LENGTH }
+            .filter { wholeNotes < it.second }
+            .map { it.third }.toList()
+    }
+
     companion object {
+        private const val MAX_NOTE_LENGTH = 8.0 // a maxima
+
+        /**
+         * The length in whole notes of a LilyPond duration as
+         * ly:duration->string writes it: "4.", "8*2/3", "\breve".
+         */
+        fun durationLength(s: String): Double? {
+            val star = s.indexOf('*')
+            val base = if (star < 0) s else s.substring(0, star)
+            val dots = base.length - base.trimEnd('.').length
+            val log = base.trimEnd('.')
+            val value = when (log) {
+                "\\breve" -> 2.0
+                "\\longa" -> 4.0
+                "\\maxima" -> 8.0
+                else -> log.toIntOrNull()?.takeIf { it > 0 }?.let { 1.0 / it } ?: return null
+            }
+            val factor = if (star < 0) 1.0 else rational(s.substring(star + 1))
+            return value * (2 - Math.pow(0.5, dots.toDouble())) * factor
+        }
+
         /** Window end meaning "to the end of the music". */
         const val OPEN_END = "1000000"
 
