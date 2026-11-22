@@ -8,6 +8,8 @@ a pen-first tablet LilyPond editor. Right now it contains:
 - `engine/`: an Android library (`LilyPondEngine`) that unpacks the runtime and runs LilyPond.
 - `harness/`: a throwaway test app (edit, render, view page 1, read the log) plus instrumented tests.
 
+Where this is heading: [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## How it works
 
 **Build.** Every LilyPond source tarball ships upstream's own static-binary build scripts
