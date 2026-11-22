@@ -1,0 +1,196 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      lilypond_version:
+        description: "LilyPond release to build (empty: the one in native/build.py; 'latest': newest release)"
+        required: false
+        default: ""
+  schedule:
+    # Mondays: build the newest LilyPond release (stable or development), so
+    # an upstream change that breaks the Android build shows up as a failed run.
+    - cron: "17 4 * * 1"
+
+concurrency:
+  group: build-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: "30.0.16248370"
+
+jobs:
+  native:
+    name: Native build (LilyPond + dependencies)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Choose LilyPond version
+        id: version
+        run: |
+          requested="${{ inputs.lilypond_version }}"
+          if [ "${{ github.event_name }}" = schedule ] || [ "$requested" = latest ]; then
+            v=$(native/tools/latest-lilypond.py)
+          elif [ -n "$requested" ]; then
+            v=$requested
+          else
+            v=$(sed -n 's/^LILYPOND_VERSION = "\(.*\)"/\1/p' native/build.py)
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "### LilyPond $v" >> "$GITHUB_STEP_SUMMARY"
+
+      # The native build takes hours and only depends on these inputs, so
+      # its packaged output is cached; app-only changes skip straight past it.
+      - name: Restore native output
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: native/out
+          key: native-${{ steps.version.outputs.version }}-${{ env.NDK_VERSION }}-${{ hashFiles('native/build.py', 'native/android_overlay.py', 'native/shims/**', 'native/ci-build.sh') }}
+
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift /usr/local/share/boost
+          df -h /
+
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          # The packages from upstream's release/binaries/ansible playbook.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bison flex libfl-dev fontforge gcc g++ gettext gperf m4 make \
+            ninja-build pkgconf python3-packaging t1utils texlive-base texlive-metapost
+          pipx install meson==1.4.0
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: native/ci-build.sh "${{ steps.version.outputs.version }}"
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-logs
+          path: |
+            native/build/*/*/log/
+            native/build/*/lilypond/build/config.log
+          if-no-files-found: ignore
+
+      - name: Save native output
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: native/out
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-out
+          path: native/out
+          retention-days: 7
+
+  app:
+    name: App (unit tests, lint, APKs)
+    needs: native
+    runs-on: ubuntu-24.04
+    env:
+      HAS_SIGNING_KEY: ${{ secrets.LILYENGINE_KEYSTORE != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-out
+          path: native/out
+
+      # Optional release signing: set the repository secrets
+      # LILYENGINE_KEYSTORE (base64 of the .jks), LILYENGINE_STORE_PASSWORD,
+      # LILYENGINE_KEY_ALIAS and LILYENGINE_KEY_PASSWORD. Without them the
+      # release APK is unsigned.
+      - name: Set up release signing
+        env:
+          KEYSTORE: ${{ secrets.LILYENGINE_KEYSTORE }}
+          STORE_PASSWORD: ${{ secrets.LILYENGINE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.LILYENGINE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.LILYENGINE_KEY_PASSWORD }}
+        if: env.HAS_SIGNING_KEY == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/keys/release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/keys/release.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > "$RUNNER_TEMP/keys/release.properties"
+          echo "SIGNING_ARGS=-Plilyengine.signing=$RUNNER_TEMP/keys/release.properties" >> "$GITHUB_ENV"
+
+      - name: Unit tests and lint
+        run: ./gradlew :engine:testDebugUnitTest :engine:lintDebug :harness:lintDebug
+
+      - name: Build APKs
+        run: |
+          ./gradlew :harness:assembleRelease -Plilyengine.abis=arm64-v8a ${SIGNING_ARGS:-}
+          mkdir -p dist
+          v=$(sed -n 's/.*versionName = "\(.*\)"/\1/p' harness/build.gradle.kts)
+          cp harness/build/outputs/apk/release/*.apk "dist/lilypond-test-$v-lilypond-${{ needs.native.outputs.version }}-arm64.apk"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: dist/*.apk
+
+  device-test:
+    name: Instrumented tests (API ${{ matrix.api }})
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [30, 35]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-out
+          path: native/out
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: ./gradlew :harness:connectedDebugAndroidTest -Plilyengine.abis=x86_64
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-api${{ matrix.api }}
+          path: harness/build/outputs/androidTest-results/
+          if-no-files-found: ignore

@@ -51,6 +51,25 @@ cd native
 cd .. && ./gradlew :harness:installDebug         # or :harness:connectedDebugAndroidTest
 ```
 
+`native/ci-build.sh [version]` runs all of the native steps above for both ABIs.
+
+### CI
+
+`.github/workflows/build.yml` runs on GitHub Actions:
+
+- **native:** the full native build, about 2–4 hours on a standard runner. Its output
+  (`native/out`) is cached under a key made from the LilyPond version, the NDK version and
+  a hash of `native/build.py`, `android_overlay.py`, `shims/` and `ci-build.sh`. Commits
+  that only change the app reuse it.
+- **app:** unit tests, lint, and the arm64 release APK as a downloadable artifact. The APK
+  is signed if the `LILYENGINE_*` repository secrets are set; the workflow file lists them.
+- **device-test:** the instrumented tests on x86_64 emulators running API 30 (Android 11)
+  and API 35.
+- **Mondays:** a scheduled run builds the newest LilyPond release, stable or development
+  (`native/tools/latest-lilypond.py`). An upstream change that breaks the Android build
+  therefore shows up as a failed run.
+- **Manual runs** take any version (`lilypond_version`, or `latest`).
+
 Device checks that run without the app:
 
 - `native/tools/device-test-guile.sh [abi]`: runs Guile on a device.
