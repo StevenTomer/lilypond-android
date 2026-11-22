@@ -2,6 +2,13 @@ package org.lilyengine.harness
 
 import android.media.MediaPlayer
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.platform.LocalContext
+import org.lilyengine.lilytools.LilyTools
+import org.lilyengine.lilytools.TextEdit
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -80,6 +87,14 @@ fun ScoreScreen(engine: LilyPondEngine) {
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val player = remember { mutableStateOf<MediaPlayer?>(null) }
+    val context = LocalContext.current
+    val tools = remember { LilyTools(context) }
+    /** Source offset of the selected note or rest; the selection follows it across re-renders. */
+    var selectedOffset by remember { mutableStateOf<Int?>(null) }
+    val undo = remember { ArrayDeque<String>() }
+    var busy by remember { mutableStateOf(false) }
+    // Python starts in the background, so the first edit doesn't wait for it.
+    LaunchedEffect(Unit) { runCatching { tools.start() } }
     DisposableEffect(Unit) {
         onDispose {
             player.value?.release()
@@ -104,7 +119,10 @@ fun ScoreScreen(engine: LilyPondEngine) {
             lookup = r.scoreMap?.let { ScoreLookup(it) }
             renderedText = source
             midi = r.midi.firstOrNull()
-            selection = emptyList()
+            selection = selectedOffset?.let { off ->
+                val (line, char) = SourcePositions.locationOf(source, off)
+                lookup?.objectsAtSource(line, char, "score.ly")
+            }.orEmpty()
             status = "${newDoc.pageCount} page(s), ${r.elapsedMillis} ms" +
                 (error?.let { " — error on line ${it.line}: ${it.message}" } ?: "")
         }
@@ -115,6 +133,8 @@ fun ScoreScreen(engine: LilyPondEngine) {
         if (value.text != renderedText) return // positions have moved since the render
         val (line, char) = SourcePositions.locationOf(value.text, value.selection.start)
         selection = l.objectsAtSource(line, char, "score.ly")
+        selectedOffset = selection.firstNotNullOfOrNull { it.origin }
+            ?.let { SourcePositions.offsetOf(value.text, it.line, it.char) }
         selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }?.let { g ->
             val (_, top) = l.pageRect(g).let { it[0] to it[1] }
             val h = document?.pageSizes?.getOrNull(g.page - 1)?.second ?: return@let
@@ -124,14 +144,44 @@ fun ScoreScreen(engine: LilyPondEngine) {
 
     fun onTap(g: Grob?) {
         val l = lookup ?: return
-        if (g == null) { selection = emptyList(); return }
+        if (g == null) { selection = emptyList(); selectedOffset = null; return }
         selection = l.sameOrigin(g)
         val origin = g.origin ?: return
         if (text.text != renderedText) return
         val start = SourcePositions.offsetOf(text.text, origin.line, origin.char)
+        selectedOffset = start
         text = text.copy(selection = TextRange(start, SourcePositions.tokenEnd(text.text, start)))
         focus.requestFocus()
         keyboard?.hide() // a pen tap shouldn't bring up the keyboard
+    }
+
+    /** Runs a structural edit on the selected item and applies the result as one text change. */
+    fun edit(action: suspend (source: String, offset: Int) -> TextEdit) {
+        val offset = selectedOffset ?: return
+        if (busy) return
+        busy = true
+        scope.launch {
+            try {
+                val before = text.text
+                val e = action(before, offset)
+                if (!e.isEmpty) {
+                    undo.addLast(before)
+                    val after = e.applyTo(before)
+                    // The item still starts at the same offset unless the edit removed it.
+                    val keep = offset.coerceAtMost(after.length)
+                    text = TextFieldValue(after, TextRange(keep, SourcePositions.tokenEnd(after, keep)))
+                }
+            } catch (ex: LilyTools.EditException) {
+                status = "Can't do that here: ${ex.message}"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun undoLast() {
+        val previous = undo.removeLastOrNull() ?: return
+        text = TextFieldValue(previous, TextRange(selectedOffset?.coerceAtMost(previous.length) ?: 0))
     }
 
     fun jumpTo(d: Diagnostic) {
@@ -164,6 +214,15 @@ fun ScoreScreen(engine: LilyPondEngine) {
                     }) { Text(if (player.value != null) "Stop" else "Play") }
                 }
                 SelectionInfo(selection, lookup)
+                EditBar(
+                    selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
+                        ?.takeIf { text.text == renderedText },
+                    canUndo = undo.isNotEmpty(),
+                    onPitch = { p -> edit { src, off -> tools.setPitch(src, off, p) } },
+                    onDuration = { d -> edit { src, off -> tools.setDuration(src, off, d) } },
+                    onDelete = { edit { src, off -> tools.delete(src, off) } },
+                    onUndo = ::undoLast,
+                )
                 ScoreView(
                     document, lookup, selection, ::onTap,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
@@ -198,6 +257,54 @@ fun ScoreScreen(engine: LilyPondEngine) {
                 editor(Modifier.weight(0.4f).fillMaxWidth())
             }
         }
+    }
+}
+
+/** Pitch, duration and delete buttons for the selected note (or rest). */
+@Composable
+private fun EditBar(
+    selected: Grob?,
+    canUndo: Boolean,
+    onPitch: (LilyTools.Pitch) -> Unit,
+    onDuration: (String) -> Unit,
+    onDelete: () -> Unit,
+    onUndo: () -> Unit,
+) {
+    val pitch = selected?.pitch?.let {
+        LilyTools.Pitch(it.notename, (ScoreMapRational.parse(it.alteration) * 2).roundToInt(), it.octave)
+    }
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        @Composable
+        fun B(label: String, enabled: Boolean = true, onClick: () -> Unit) =
+            OutlinedButton(onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(label) }
+        B("▲", pitch != null) { pitch?.let { onPitch(it.stepped(+1)) } }
+        B("▼", pitch != null) { pitch?.let { onPitch(it.stepped(-1)) } }
+        B("♯", pitch != null) { pitch?.let { onPitch(it.copy(semitones = 1)) } }
+        B("♭", pitch != null) { pitch?.let { onPitch(it.copy(semitones = -1)) } }
+        B("♮", pitch != null) { pitch?.let { onPitch(it.copy(semitones = 0)) } }
+        for (d in listOf("1", "2", "4", "8", "16")) B(d, selected != null) { onDuration(d) }
+        B("Dot", selected?.duration != null) {
+            val d = selected?.duration ?: return@B
+            onDuration(if (d.endsWith(".")) d.trimEnd('.') else "$d.")
+        }
+        B("Delete", selected != null, onDelete)
+        B("Undo", canUndo, onUndo)
+    }
+}
+
+/** One diatonic step up or down, without an accidental. */
+private fun LilyTools.Pitch.stepped(by: Int): LilyTools.Pitch {
+    val s = step + by
+    return LilyTools.Pitch(Math.floorMod(s, 7), 0, octave + Math.floorDiv(s, 7))
+}
+
+private object ScoreMapRational {
+    fun parse(s: String): Double {
+        val slash = s.indexOf('/')
+        return if (slash < 0) s.toDouble() else s.substring(0, slash).toDouble() / s.substring(slash + 1).toDouble()
     }
 }
 

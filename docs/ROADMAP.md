@@ -61,7 +61,22 @@ This plan covers the pieces needed before the editor and the editor phases after
     cursor to highlight the note, Play for MIDI, and Go to error.
   - Still to do: lasso and range selection, the hover ghost note (the pitch under the
     pen), tiled rendering for deep zoom (pages are drawn sharp up to 2.5x, then scaled).
-- **M3 spike (`:pyspike`):**
+- **M3 (`:lilytools`), first cut done:**
+  - Chaquopy runs in an Android library module; python-ly 0.9.10 is pinned.
+  - `lilyedit.py` has set pitch, set duration, delete, transpose and rel2abs. python-ly's
+    rel2abs is the reference for absolute pitches. An edit writes the change, then
+    corrects octave marks note by note until every other note sounds as before. So
+    `\\relative`, chords and `\\\\` voices need no special code. A new duration
+    writes out the next note's old duration when that note had none of its own.
+  - The Kotlin `LilyTools` returns the smallest single `TextEdit`. Tests: 14 host Python
+    tests (CI), Kotlin unit tests, 3 instrumented tests that compare LilyPond's engraving
+    before and after, and a self-test check.
+  - The Score tab has an edit bar: step up/down, sharp/flat/natural, durations, dot,
+    delete, undo.
+  - Cost: the arm64 APK went from 22.5 to 35.5 MB.
+  - Still to do: midi2ly / convert-ly / musicxml2ly from LilyPond's own scripts, and
+    key-aware spelling for step up/down (it currently writes naturals).
+- **M3 spike (`:pyspike`, superseded by `:lilytools`):**
   - Chaquopy 17.2 + Python 3.14 + python-ly 0.9.10 run on Android with AGP 9.5.
   - Python starts in 0.9 s; the python-ly import takes 80 ms.
   - rel2abs handles the `\\` case exactly as LilyPond does. Transposition keeps

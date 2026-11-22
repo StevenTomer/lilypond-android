@@ -1,6 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
-    id("com.chaquo.python") version "17.2.0"
+    alias(libs.plugins.chaquopy)
 }
 
 android {

@@ -4,12 +4,13 @@ import android.media.MediaPlayer
 import android.os.Build
 import org.lilyengine.engine.Diagnostic
 import org.lilyengine.engine.LilyPondEngine
+import org.lilyengine.lilytools.LilyTools
 
 /**
  * On-device checks that need no adb: the same things the instrumented tests
  * check, plus a few more, with a plain-text report that can be shared.
  */
-class SelfTest(private val engine: LilyPondEngine) {
+class SelfTest(private val engine: LilyPondEngine, private val tools: LilyTools) {
     data class Check(val name: String, val passed: Boolean, val millis: Long, val detail: String)
 
     suspend fun run(onProgress: (List<Check>) -> Unit): List<Check> {
@@ -93,6 +94,18 @@ class SelfTest(private val engine: LilyPondEngine) {
                 "voice 1: $v1, voice 2: $v2"
             }
             "voice 1: ${v1.joinToString(" ")}; voice 2: ${v2.joinToString(" ")}; ${map.grobs.size} objects"
+        }
+        check("Edit on the score: pitch in voice 2 (embedded Python)") {
+            // Voice 2's c,2 (sounding c') becomes a' ("a," after e''), and the
+            // g' after it needs one mark less: "{ a,2 g }".
+            val src = POLY_SAMPLE
+            val start = System.nanoTime()
+            tools.start()
+            val startup = (System.nanoTime() - start) / 1_000_000
+            val e = tools.setPitch(src, src.indexOf("c,2"), LilyTools.Pitch(5, 0, 0))
+            val out = e.applyTo(src)
+            require(out.contains("{ a,2 g }")) { out }
+            "\"c,2 g'\" became \"${e.replacement}\" (Python ready after $startup ms)"
         }
         return results
     }

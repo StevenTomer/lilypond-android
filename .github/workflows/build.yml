@@ -113,6 +113,10 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
+      # Chaquopy (embedded Python) builds with the same Python version it ships.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
       - uses: actions/download-artifact@v4
         with:
           name: native-out
@@ -141,7 +145,12 @@ jobs:
           echo "SIGNING_ARGS=-Plilyengine.signing=$RUNNER_TEMP/keys/release.properties" >> "$GITHUB_ENV"
 
       - name: Unit tests and lint
-        run: ./gradlew :engine:testDebugUnitTest :scoreview:testDebugUnitTest :engine:lintDebug :scoreview:lintDebug :harness:lintDebug
+        run: ./gradlew :engine:testDebugUnitTest :scoreview:testDebugUnitTest :lilytools:testDebugUnitTest :engine:lintDebug :scoreview:lintDebug :lilytools:lintDebug :harness:lintDebug
+
+      - name: Python edit tests (lilyedit + python-ly)
+        run: |
+          python -m pip install --quiet python-ly==0.9.10
+          cd lilytools/src/test/python && python -m unittest -v test_lilyedit
 
       - name: Build APKs
         run: |
@@ -172,6 +181,10 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
+      # Chaquopy (embedded Python) builds with the same Python version it ships.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
       - uses: actions/download-artifact@v4
         with:
           name: native-out

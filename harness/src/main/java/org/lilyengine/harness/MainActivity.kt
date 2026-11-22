@@ -45,6 +45,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.lilyengine.engine.LilyPondEngine
+import org.lilyengine.lilytools.LilyTools
 import java.io.File
 
 /** Throwaway test shell for the engine: edit, render, view page 1, read the log. */
@@ -86,6 +87,7 @@ private fun Harness(engine: LilyPondEngine) {
     var report by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val tools = remember { LilyTools(context) }
 
     Column(Modifier.fillMaxSize().padding(8.dp)) {
         Row(
@@ -114,7 +116,7 @@ private fun Harness(engine: LilyPondEngine) {
                 page = null
                 scope.launch {
                     log = "Running self-test…"
-                    val checks = SelfTest(engine).run { partial ->
+                    val checks = SelfTest(engine, tools).run { partial ->
                         log = SelfTest.report(partial) + "\nRunning…"
                     }
                     report = SelfTest.report(checks)
