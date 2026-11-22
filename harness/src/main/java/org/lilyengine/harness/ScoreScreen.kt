@@ -156,8 +156,8 @@ fun ScoreScreen(engine: LilyPondEngine) {
     }
 
     /** Runs a structural edit on the selected item and applies the result as one text change. */
-    fun edit(action: suspend (source: String, offset: Int) -> TextEdit) {
-        val offset = selectedOffset ?: return
+    fun edit(at: Int? = null, action: suspend (source: String, offset: Int) -> TextEdit) {
+        val offset = at ?: selectedOffset ?: return
         if (busy) return
         busy = true
         scope.launch {
@@ -219,6 +219,7 @@ fun ScoreScreen(engine: LilyPondEngine) {
                         ?.takeIf { text.text == renderedText },
                     canUndo = undo.isNotEmpty(),
                     onPitch = { p -> edit { src, off -> tools.setPitch(src, off, p) } },
+                    onStep = { by -> edit { src, off -> tools.step(src, off, by) } },
                     onDuration = { d -> edit { src, off -> tools.setDuration(src, off, d) } },
                     onDelete = { edit { src, off -> tools.delete(src, off) } },
                     onUndo = ::undoLast,
@@ -227,6 +228,14 @@ fun ScoreScreen(engine: LilyPondEngine) {
                     document, lookup, selection, ::onTap,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
                     state = viewState,
+                    onDragSteps = { g, steps ->
+                        val o = g.origin
+                        if (o != null && text.text == renderedText) {
+                            val at = SourcePositions.offsetOf(text.text, o.line, o.char)
+                            selectedOffset = at
+                            edit(at) { src, off -> tools.step(src, off, steps) }
+                        }
+                    },
                 )
             }
         }
@@ -266,6 +275,7 @@ private fun EditBar(
     selected: Grob?,
     canUndo: Boolean,
     onPitch: (LilyTools.Pitch) -> Unit,
+    onStep: (Int) -> Unit,
     onDuration: (String) -> Unit,
     onDelete: () -> Unit,
     onUndo: () -> Unit,
@@ -280,8 +290,8 @@ private fun EditBar(
         @Composable
         fun B(label: String, enabled: Boolean = true, onClick: () -> Unit) =
             OutlinedButton(onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(label) }
-        B("▲", pitch != null) { pitch?.let { onPitch(it.stepped(+1)) } }
-        B("▼", pitch != null) { pitch?.let { onPitch(it.stepped(-1)) } }
+        B("▲", pitch != null) { onStep(+1) }
+        B("▼", pitch != null) { onStep(-1) }
         B("♯", pitch != null) { pitch?.let { onPitch(it.copy(semitones = 1)) } }
         B("♭", pitch != null) { pitch?.let { onPitch(it.copy(semitones = -1)) } }
         B("♮", pitch != null) { pitch?.let { onPitch(it.copy(semitones = 0)) } }
@@ -293,12 +303,6 @@ private fun EditBar(
         B("Delete", selected != null, onDelete)
         B("Undo", canUndo, onUndo)
     }
-}
-
-/** One diatonic step up or down, without an accidental. */
-private fun LilyTools.Pitch.stepped(by: Int): LilyTools.Pitch {
-    val s = step + by
-    return LilyTools.Pitch(Math.floorMod(s, 7), 0, octave + Math.floorDiv(s, 7))
 }
 
 private object ScoreMapRational {

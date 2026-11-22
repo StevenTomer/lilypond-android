@@ -152,8 +152,16 @@ fun ScoreView(
     onTap: (Grob?) -> Unit,
     modifier: Modifier = Modifier,
     state: ScoreViewState = rememberScoreViewState(),
+    /**
+     * Called when a selected note head is dragged up or down with a pen and
+     * released: the number of staff positions (lines and spaces) it moved,
+     * up being positive.
+     */
+    onDragSteps: ((Grob, Int) -> Unit)? = null,
 ) {
     var hover by remember { mutableStateOf<Grob?>(null) }
+    /** A note head being dragged with the pen, and by how many staff positions. */
+    var drag by remember { mutableStateOf<Pair<Grob, Int>?>(null) }
     val voices = remember(lookup) {
         lookup?.map?.grobs?.mapNotNull { it.voice }?.distinct()?.sorted().orEmpty()
     }
@@ -201,6 +209,33 @@ fun ScoreView(
                                 onTap(lookup?.objectAt(page, (off.x * k).toDouble(), (off.y * k).toDouble()))
                             }
                         }
+                        .pointerInput(lookup, page, wPt, selection, onDragSteps) {
+                            if (lookup == null || onDragSteps == null) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                if (down.type != PointerType.Stylus) return@awaitEachGesture
+                                val k = wPt / size.width
+                                val g = lookup.objectAt(page, (down.position.x * k).toDouble(), (down.position.y * k).toDouble())
+                                    ?.takeIf { it.type == "NoteHead" && it in selection } ?: return@awaitEachGesture
+                                // Half a staff space (one line or space) in pixels.
+                                val stepPx = ((g.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2 / k).toFloat()
+                                var dragging = false
+                                while (true) {
+                                    val e = awaitPointerEvent()
+                                    val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                                    val dy = c.position.y - down.position.y
+                                    if (!dragging && kotlin.math.abs(dy) > viewConfiguration.touchSlop) dragging = true
+                                    if (dragging) {
+                                        c.consume() // no scrolling, and not a tap
+                                        drag = g to -(dy / stepPx).roundToInt()
+                                    }
+                                    if (!c.pressed) break
+                                }
+                                val result = drag
+                                drag = null
+                                if (dragging && result != null && result.second != 0) onDragSteps(result.first, result.second)
+                            }
+                        }
                         .pointerInput(lookup, page, wPt) {
                             awaitPointerEventScope {
                                 while (true) {
@@ -237,6 +272,14 @@ fun ScoreView(
                                 val color = voiceColor(g.voice, voices)
                                 drawRect(color.copy(alpha = 0.4f), o, s)
                                 drawRect(color, o, s, style = Stroke(width = 2.dp.toPx()))
+                            }
+                            drag?.takeIf { it.first.page == page }?.let { (g, steps) ->
+                                // A ghost note head where the note would go.
+                                val (o, sz) = box(g, 0.1f)
+                                val dy = -steps * ((g.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2).toFloat() * px
+                                val color = voiceColor(g.voice, voices)
+                                drawOval(color.copy(alpha = 0.5f), o.copy(y = o.y + dy), sz)
+                                drawOval(color, o.copy(y = o.y + dy), sz, style = Stroke(width = 2.dp.toPx()))
                             }
                             hover?.takeIf { it.page == page }?.let { g ->
                                 val (o, s) = box(g, 0.3f)

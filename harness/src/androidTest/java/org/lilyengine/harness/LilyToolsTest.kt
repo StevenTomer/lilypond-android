@@ -46,6 +46,13 @@ class LilyToolsTest {
     }
 
     @Test
+    fun stepFollowsTheKey() = runBlocking {
+        val src = "\\version \"2.26.0\"\n\\relative { \\key g \\major e''4 d c b }\n"
+        val out = tools.step(src, src.indexOf("e''"), 1).applyTo(src)
+        assertEquals(listOf("fis''", "d''", "c''", "b'"), heads(out).values.flatten())
+    }
+
+    @Test
     fun errorsComeBackAsExceptions() = runBlocking {
         try {
             tools.setPitch("{ c'4 }", 0, LilyTools.Pitch(0, 0, 0))

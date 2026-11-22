@@ -16,6 +16,7 @@ corrected until every note sounds where it should.
 """
 
 import json
+from fractions import Fraction
 
 import ly.document
 import ly.lex
@@ -149,6 +150,69 @@ def set_pitch(text, pos, note, alter, octave):
     return _fix_octaves(text, desired)
 
 
+# Semitones above the tonic of each scale step, per mode.
+_MODES = {
+    "major": [0, 2, 4, 5, 7, 9, 11], "ionian": [0, 2, 4, 5, 7, 9, 11],
+    "minor": [0, 2, 3, 5, 7, 8, 10], "aeolian": [0, 2, 3, 5, 7, 8, 10],
+    "dorian": [0, 2, 3, 5, 7, 9, 10], "phrygian": [0, 1, 3, 5, 7, 8, 10],
+    "lydian": [0, 2, 4, 6, 7, 9, 11], "mixolydian": [0, 2, 4, 5, 7, 9, 10],
+    "locrian": [0, 1, 3, 5, 6, 8, 10],
+}
+_NATURAL = [0, 2, 4, 5, 7, 9, 11]  # c d e f g a b
+
+
+def key_at(text, pos):
+    """The key signature in effect at `pos`: (tonic note, tonic alter, mode)
+    from the last \\key before it in the text, or C major. (A \\key in a
+    variable defined earlier, like `global`, counts, since it comes first
+    in the text.)"""
+    doc = ly.document.Document(text)
+    source = ly.document.Source(ly.document.Cursor(doc), True, tokens_with_position=True)
+    key = (0, 0, "major")
+    state, tonic = None, None
+    for t in ly.pitch.PitchIterator(source).pitches():
+        is_pitch = isinstance(t, ly.pitch.Pitch)
+        if (t.note_token.pos if is_pitch else t.pos) >= pos:
+            break
+        if not is_pitch and isinstance(t, (ly.lex.Space, ly.lex.Comment)):
+            continue
+        if not is_pitch and t == "\\key":
+            state = "tonic"
+        elif state == "tonic" and is_pitch:
+            tonic, state = t, "mode"
+        elif state == "mode":
+            mode = str(t).lstrip("\\")
+            if mode in _MODES:
+                key = (tonic.note, tonic.alter, mode)
+            state = None
+        else:
+            state = None
+    return key
+
+
+def scale_alter(key, note):
+    """The alteration (in whole tones) that `note` (0-6) has in `key`."""
+    tonic, tonic_alter, mode = key
+    tonic_semitone = _NATURAL[tonic] + tonic_alter * 2
+    wanted = int(round(tonic_semitone + _MODES[mode][(note - tonic) % 7])) % 12
+    d = (wanted - _NATURAL[note]) % 12
+    if d > 6:
+        d -= 12
+    return Fraction(d, 2)
+
+
+def step(text, pos, by):
+    """Moves the note at `pos` up (by > 0) or down by scale steps, spelled
+    as the key signature in effect there has it: in G major, e goes up to
+    fis."""
+    before = notes(text)
+    n = before[_note_index(before, pos)]
+    s = n.note + by
+    octave = n.octave + s // 7
+    s %= 7
+    return set_pitch(text, pos, s, scale_alter(key_at(text, pos), s), octave)
+
+
 def transpose(text, start, end, from_pitch, to_pitch):
     """Transposes the music between start and end (whole text if end < 0)
     by the interval from_pitch -> to_pitch, e.g. "c" -> "d"."""
@@ -277,6 +341,8 @@ def call(request_json):
     try:
         if op == "set_pitch":
             out = set_pitch(text, req["pos"], req["note"], req["alter"], req["octave"])
+        elif op == "step":
+            out = step(text, req["pos"], req["by"])
         elif op == "set_duration":
             out = set_duration(text, req["pos"], req["duration"])
         elif op == "delete":

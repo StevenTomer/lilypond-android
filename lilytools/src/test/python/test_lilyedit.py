@@ -68,6 +68,35 @@ class SetPitch(unittest.TestCase):
         self.assertEqual(out, "\\relative c'' {\n  % melody\n  c4   es  e\n}\n")
 
 
+class Step(unittest.TestCase):
+    def test_follows_the_key(self):
+        src = "\\relative { \\key g \\major e'4 a }"
+        self.assertEqual(e.step(src, src.index("e'"), 1), "\\relative { \\key g \\major fis'4 a }")
+        src = "{ \\key f \\major a'4 }"
+        self.assertEqual(e.step(src, src.index("a'"), 1), "{ \\key f \\major bes'4 }")
+
+    def test_down_and_octave_wrap(self):
+        src = "{ \\key g \\major g'4 c'4 }"
+        self.assertEqual(e.step(src, src.index("g'"), -1), "{ \\key g \\major fis'4 c'4 }")
+        self.assertEqual(e.step(src, src.index("c'4 }"), -1), "{ \\key g \\major g'4 b4 }")
+
+    def test_modes(self):
+        self.assertEqual(e.scale_alter((5, 0, "minor"), 3), 0)       # a minor: f
+        self.assertEqual(e.scale_alter((2, 0, "major"), 4), 0.5)     # e major: gis
+        self.assertEqual(e.scale_alter((1, 0, "dorian"), 6), 0)      # d dorian: b
+        self.assertEqual(e.scale_alter((6, -0.5, "major"), 2), -0.5) # bes major: es
+
+    def test_latest_key_before_the_note(self):
+        src = "global = { \\key d \\major }\n{ \\global b'4 c'' \\key c \\major b' }"
+        out = e.step(src, src.index("b'4"), 1)
+        self.assertIn("{ \\global cis''4 c''", out)
+        out = e.step(src, src.rindex("b'"), 1)
+        self.assertTrue(out.endswith("\\key c \\major c'' }"), out)
+
+    def test_no_key_is_c_major(self):
+        self.assertEqual(e.step("{ e'4 }", 2, 1), "{ f'4 }")
+
+
 class Durations(unittest.TestCase):
     def test_next_note_keeps_its_implicit_duration(self):
         src = "{ c'4 d' e' f'2 }"

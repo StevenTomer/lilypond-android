@@ -50,6 +50,15 @@ class LilyTools(context: Context) {
             .put("octave", pitch.octave + 1), // python-ly: c' is octave 1
     )
 
+    /**
+     * Moves the note at [offset] [by] scale steps (up if positive), spelled as
+     * the key signature in effect there has it: in G major, e goes up to fis.
+     */
+    suspend fun step(text: String, offset: Int, by: Int): TextEdit = call(
+        text,
+        JSONObject().put("op", "step").put("pos", text.codePointCount(0, offset)).put("by", by),
+    )
+
     /** [duration] as written in LilyPond, e.g. "8" or "4.". */
     suspend fun setDuration(text: String, offset: Int, duration: String): TextEdit = call(
         text,
