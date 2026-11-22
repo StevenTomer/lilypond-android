@@ -16,6 +16,7 @@ corrected until every note sounds where it should.
 """
 
 import json
+import re
 from fractions import Fraction
 
 import ly.document
@@ -662,7 +663,10 @@ def insert(text, pos, keys, duration=None, after=False):
     previous = [eff for it, _, eff in items if it.pos < pos]
     current = previous[-1] if previous else "4"
     following = [(it, w, eff) for it, w, eff in items if it.pos >= pos]
-    write = duration if duration and (duration != current or not previous) else ""
+    # At the start of a voice the duration is written even if it is the one
+    # carried over (from the other voice, in reading order): clearer to read.
+    starts_voice = re.search(r"(\{|<<|\\\\)\s*$", text[:pos]) is not None
+    write = duration if duration and (duration != current or not previous or starts_voice) else ""
     new_current = duration or current
 
     key = key_at(text, pos)
@@ -695,6 +699,227 @@ def insert(text, pos, keys, duration=None, after=False):
 
 
 # --------------------------------------------------------------------------
+# Voices: adding a second voice to a passage, removing one, filling rests
+
+def _dur_value(d):
+    """A written duration as a fraction of a whole note: "4." is 3/8,
+    "1*3/4" is 3/4. None if it can't be read."""
+    m = re.match(r"^(\\breve|\\longa|\d+)(\.*)(?:\*(\d+)(?:/(\d+))?)?$", d.strip())
+    if not m:
+        return None
+    base = {"\\breve": Fraction(2), "\\longa": Fraction(4)}.get(m.group(1))
+    if base is None:
+        base = Fraction(1, int(m.group(1)))
+    value, add = base, base
+    for _ in m.group(2):
+        add /= 2
+        value += add
+    if m.group(3):
+        value *= Fraction(int(m.group(3)), int(m.group(4) or 1))
+    return value
+
+
+_PLAIN = [(Fraction(1, 2 ** k), str(2 ** k)) for k in range(7)]  # 1 2 4 … 64
+
+
+def _durations_for(value):
+    """Written durations adding up to `value`, longest first: 3/4 is ["2."],
+    5/8 is ["2", "8"]."""
+    out = []
+    while value > 0:
+        for v, d in _PLAIN:
+            if v * Fraction(3, 2) <= value:
+                out.append(d + ".")
+                value -= v * Fraction(3, 2)
+                break
+            if v <= value:
+                out.append(d)
+                value -= v
+                break
+        else:
+            raise ValueError("a duration too short to write")
+    return out
+
+
+def _is_rest(text, it):
+    start = _item_start(text, it)
+    return text[start] in "rs" and (start + 1 >= len(text) or not text[start + 1].isalpha())
+
+
+def _same_sequence(text, a, b):
+    """Whether nothing between offsets a and b opens or closes a sequence or
+    a voice."""
+    return not re.search(r"[{}]|<<|>>|\\\\", text[a:b])
+
+
+def _write_duration(text, it, effective):
+    """Writes out an item's duration if it has none written (from the right
+    end of the text, so earlier offsets stay valid)."""
+    if it.dur_tokens:
+        return text
+    return text[:it.insert_pos] + effective + text[it.insert_pos:]
+
+
+def add_voice(text, positions):
+    """Turns the items at `positions` (one stretch of one voice) into the
+    first voice of `<< { … } \\\\ { rests } >>`, the rests as long as the
+    stretch, so a second voice can be entered there. Returns (text, offset
+    of the first rest)."""
+    items = _items(text)
+    ks = sorted({_item_index(text, items, p) for p in positions})
+    a, b = ks[0], ks[-1]
+    start = _item_start(text, items[a][0])
+    end = _item_end(text, items[b][0])
+    if not _same_sequence(text, start, end):
+        raise ValueError("select notes in one voice, not across voices")
+    total = Fraction(0)
+    for it, _, eff in items[a:b + 1]:
+        v = _dur_value(eff)
+        if v is None:
+            raise ValueError("can't work out the length of " + eff)
+        total += v
+    before = notes(text)
+    # After the << >>, LilyPond carries on with the rests' last duration, so
+    # the next item gets its own written out; so does the first in the
+    # passage, which would otherwise follow whatever came before it.
+    if b + 1 < len(items) and items[b + 1][1] is None:
+        text = _write_duration(text, items[b + 1][0], items[b + 1][2])
+    passage = text[start:end]
+    first = items[a][0]
+    if not first.dur_tokens:
+        k = first.insert_pos - start
+        passage = passage[:k] + items[a][2] + passage[k:]
+    rests = " ".join("r" + d for d in _durations_for(total))
+    wrapped = "<< { " + passage + " } \\\\ { " + rests + " } >>"
+    text = text[:start] + wrapped + text[end:]
+    text = _fix_octaves(text, [n.key() for n in before])
+    return text, text.index("{ " + rests, start) + 2
+
+
+def _enclosing_voices(text, pos):
+    """The `<< … \\\\ … >>` around `pos`: (start of <<, end of >>, the parts
+    as (start, end) offsets of each voice's text between the separators)."""
+    depth_stack = []
+    i = 0
+    found = None
+    while i < len(text):
+        if text.startswith("<<", i):
+            depth_stack.append(i)
+            i += 2
+            continue
+        if text.startswith(">>", i) and depth_stack:
+            open_at = depth_stack.pop()
+            if open_at <= pos < i and (found is None or open_at > found[0]):
+                found = (open_at, i + 2)
+            i += 2
+            continue
+        if text[i] == "%":  # a comment: to the end of the line
+            nl = text.find("\n", i)
+            i = len(text) if nl < 0 else nl
+            continue
+        i += 1
+    if not found:
+        raise ValueError("not in a passage with two voices (<< { } \\\\ { } >>)")
+    start, end = found
+    parts, depth, brace, last = [], 0, 0, start + 2
+    i = start + 2
+    while i < end - 2:
+        if text.startswith("<<", i):
+            depth += 1; i += 2; continue
+        if text.startswith(">>", i):
+            depth -= 1; i += 2; continue
+        if text[i] == "{":
+            brace += 1
+        elif text[i] == "}":
+            brace -= 1
+        elif text.startswith("\\\\", i) and depth == 0 and brace == 0:
+            parts.append((last, i))
+            last = i + 2
+            i += 2
+            continue
+        i += 1
+    parts.append((last, end - 2))
+    if len(parts) < 2:
+        raise ValueError("not in a passage with two voices (<< { } \\\\ { } >>)")
+    return start, end, parts
+
+
+def remove_voice(text, pos):
+    """Removes the voice that `pos` is in from the `<< { } \\\\ { } >>` around
+    it; with one voice left, its music takes the place of the << >>.
+    Returns the text."""
+    start, end, parts = _enclosing_voices(text, pos)
+    drop = next((k for k, (a, b) in enumerate(parts) if a <= pos < b), None)
+    if drop is None:
+        raise ValueError("select a note in the voice to remove")
+    items = _items(text)
+    # Durations that would change: the first item of each voice and the one
+    # after the >> get theirs written out (from the right end).
+    fixes = []
+    for a, b in parts:
+        inside = [x for x in items if a <= x[0].pos < b]
+        if inside:
+            fixes.append(inside[0])
+    after = [x for x in items if x[0].pos >= end]
+    if after:
+        fixes.append(after[0])
+    for it, written, eff in sorted(fixes, key=lambda x: x[0].pos, reverse=True):
+        if written is None:
+            text = _write_duration(text, it, eff)
+    start, end, parts = _enclosing_voices(text, start + 2)
+    keep = [text[a:b].strip() for k, (a, b) in enumerate(parts) if k != drop]
+    dropped_span = parts[drop]
+    if len(keep) == 1:
+        body = keep[0]
+        if body.startswith("{") and body.endswith("}"):
+            body = body[1:-1].strip()
+        replacement = body
+    else:
+        replacement = "<< " + " \\\\ ".join(keep) + " >>"
+    current = notes(text)
+    desired = [n.key() for n in current if not (dropped_span[0] <= n.pos < dropped_span[1])]
+    text = text[:start] + replacement + text[end:]
+    return _fix_octaves(text, desired)
+
+
+def fill(text, pos, keys, duration):
+    """Note entry over rests: the note, chord or rest (empty `keys`) takes
+    the place of the rest at `pos`, or of the rest right after the item at
+    `pos` in the same voice; what is left of the rest stays as rests.
+    Returns (text, start of the new item), or None if there is no rest to
+    fill there."""
+    items = _items(text)
+    k = _item_index(text, items, pos)
+    if _is_rest(text, items[k][0]):
+        target = k
+    elif (k + 1 < len(items) and _is_rest(text, items[k + 1][0])
+          and _same_sequence(text, _item_end(text, items[k][0]), _item_start(text, items[k + 1][0]))):
+        target = k + 1
+    else:
+        return None
+    rest, _, rest_eff = items[target]
+    have, want = _dur_value(rest_eff), _dur_value(duration)
+    if have is None or want is None:
+        return None
+    rest_start = _item_start(text, rest)
+    # The new item goes in front of the rest, which then shrinks or goes.
+    text, new_start = insert(text, rest_start, keys, duration)
+    items = _items(text)
+    rest_k = next(j for j, (it, _, _) in enumerate(items) if _item_start(text, it) > new_start and _is_rest(text, it))
+    left = have - want
+    if left <= 0:
+        text = delete(text, _item_start(text, items[rest_k][0]))
+    else:
+        parts = _durations_for(left)
+        rest_pos = _item_start(text, items[rest_k][0])
+        text = set_duration(text, rest_pos, parts[0])
+        at = rest_pos
+        for d in parts[1:]:
+            text, at = insert(text, at, [], d, after=True)
+    return text, new_start
+
+
+# --------------------------------------------------------------------------
 # Entry point for Kotlin: one JSON request in, one JSON reply out.
 
 
@@ -714,8 +939,14 @@ def call(request_json):
         elif op == "transpose":
             out = transpose(text, req.get("start", 0), req.get("end", -1), req["from"], req["to"])
         elif op == "insert":
-            out, start = insert(text, req["pos"], req.get("keys", []), req.get("duration"),
-                                req.get("after", False))
+            filled = None
+            if req.get("fill") and req.get("after") and req.get("duration"):
+                filled = fill(text, req["pos"], req.get("keys", []), req["duration"])
+            if filled:
+                out, start = filled
+            else:
+                out, start = insert(text, req["pos"], req.get("keys", []), req.get("duration"),
+                                    req.get("after", False))
             return json.dumps({"text": out, "start": start})
         elif op == "toggle":
             out = toggle(text, req["pos"], req["what"])
@@ -725,6 +956,16 @@ def call(request_json):
         elif op == "span":
             out, positions = span(text, req["pairs"], req["kind"], req.get("positions", []))
             return json.dumps({"text": out, "positions": positions})
+        elif op == "add_voice":
+            out, start = add_voice(text, req["positions"])
+            return json.dumps({"text": out, "start": start})
+        elif op == "remove_voice":
+            out = remove_voice(text, req["pos"])
+        elif op == "fill":
+            r = fill(text, req["pos"], req.get("keys", []), req["duration"])
+            if r is None:
+                return json.dumps({"none": True})
+            return json.dumps({"text": r[0], "start": r[1]})
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":

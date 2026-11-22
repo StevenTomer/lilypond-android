@@ -189,6 +189,25 @@ This plan covers the pieces needed before the editor and the editor phases after
     step, staccato, a slur per voice, and delete, checked against LilyPond's
     engraving.
 
+- **0.13.0, adding and removing voices (E3):**
+  - `lilyedit.add_voice` turns one stretch of one voice (the selected note or range)
+    into `<< { …the notes… } \\\\ { rests } >>`. The rests are exactly as long as the
+    stretch (duration arithmetic with fractions; `_durations_for` writes 7/8 as
+    `2. 8`).
+  - Durations that the `<< >>` would change are written out: the first note inside,
+    and the item after the `>>`, since LilyPond carries on with the rests' last
+    duration. Octaves are corrected so everything sounds as before.
+  - `lilyedit.remove_voice` removes the voice the selection is in. With one voice
+    left, its music replaces the `<< >>`, with durations and octaves kept.
+  - Note entry fills rests (`lilyedit.fill`, the "Fill rests" switch, on by default):
+    a note played on a selected rest, or on the rest right after the selected note in
+    the same voice, takes its place, and the remainder stays as rests. A note at the
+    start of a voice always gets its duration written.
+  - The Score tab: "Add voice" selects the new voice's first rest and turns on note
+    entry. "Remove voice" works on a note in a `\\\\` passage.
+  - Tests: 9 Python tests, plus an instrumented test: add a voice, fill it from the
+    keyboard path, check both voices in LilyPond's engraving, then remove each voice.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

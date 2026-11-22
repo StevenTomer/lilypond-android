@@ -1,5 +1,6 @@
 """Host tests for lilyedit: python3 -m unittest (python-ly on PYTHONPATH)."""
 import json
+from fractions import Fraction
 import os
 import sys
 import unittest
@@ -340,6 +341,60 @@ class Ranges(unittest.TestCase):
         reply = json.loads(e.call(json.dumps({"op": "span", "text": self.SRC, "kind": "slur",
                                               "pairs": [[self.SRC.index("c4"), self.SRC.index("c4")]]})))
         self.assertIn("error", reply)
+
+
+
+class Voices(unittest.TestCase):
+    SRC = "\\relative c'' { \\key g \\major b4 c d2 | e4 d c b | a1 }"
+
+    def test_durations(self):
+        self.assertEqual(e._dur_value("4.."), Fraction(7, 16))
+        self.assertEqual(e._dur_value("1*3/4"), Fraction(3, 4))
+        self.assertEqual(e._durations_for(Fraction(7, 8)), ["2.", "8"])
+        self.assertEqual(e._durations_for(Fraction(5, 8)), ["2", "8"])
+
+    def test_add_voice_with_rests_as_long_as_the_passage(self):
+        out, start = e.add_voice(self.SRC, [self.SRC.index("b4"), self.SRC.index("d2")])
+        self.assertEqual(out, "\\relative c'' { \\key g \\major << { b4 c d2 } \\\\ { r1 } >> | e4 d c b | a1 }")
+        self.assertEqual(out[start:start + 2], "r1")
+        self.assertEqual(absolute(out), absolute(self.SRC))
+
+    def test_durations_stay_right_around_the_new_voice(self):
+        src = "\\relative c'' { b8 c d e f2 | g }"
+        out, _ = e.add_voice(src, [src.index("c d"), src.index("e f")])
+        self.assertEqual(out, "\\relative c'' { b8 << { c8 d e } \\\\ { r4. } >> f2 | g }")
+
+    def test_across_voices_is_refused(self):
+        src = "<< { c'4 d' } \\\\ { e2 } >>"
+        with self.assertRaises(ValueError):
+            e.add_voice(src, [src.index("d'"), src.index("e2")])
+
+    def test_entry_fills_the_rests(self):
+        out, start = e.add_voice(self.SRC, [self.SRC.index("b4"), self.SRC.index("d2")])
+        for key, d in [(55, "4"), (57, "4"), (54, "2")]:
+            out, start = e.fill(out, start, [key], d)
+        self.assertIn("{ b4 c d2 } \\\\ { g,,4 a fis2 } >> | e''4 d c b", out)
+        # full: nothing left to fill, so entry inserts as usual
+        self.assertIsNone(e.fill(out, start, [55], "4"))
+        # every other note sounds as before
+        self.assertEqual(absolute(e.remove_voice(out, out.index("g,,"))), absolute(self.SRC))
+
+    def test_fill_through_insert(self):
+        out, start = e.add_voice(self.SRC, [self.SRC.index("b4"), self.SRC.index("d2")])
+        reply = json.loads(e.call(json.dumps({"op": "insert", "text": out, "pos": start, "keys": [55],
+                                              "duration": "2", "after": True, "fill": True})))
+        self.assertIn("{ g,,2 r2 }", reply["text"])
+
+    def test_remove_either_voice(self):
+        out, _ = e.add_voice(self.SRC, [self.SRC.index("b4"), self.SRC.index("d2")])
+        out, start = e.fill(out, out.index("r1"), [55], "1")
+        self.assertEqual(e.remove_voice(out, out.index("g,,")), self.SRC)
+        self.assertEqual(e.remove_voice(out, out.index("b4")),
+                         "\\relative c'' { \\key g \\major g,1 | e''4 d c b | a1 }")  # the same g, now after c
+
+    def test_remove_voice_outside_voices_is_refused(self):
+        with self.assertRaises(ValueError):
+            e.remove_voice(self.SRC, self.SRC.index("a1"))
 
 
 if __name__ == "__main__":

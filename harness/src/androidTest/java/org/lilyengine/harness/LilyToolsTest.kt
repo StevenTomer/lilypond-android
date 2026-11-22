@@ -101,6 +101,31 @@ class LilyToolsTest {
     }
 
     @Test
+    fun addVoiceFillItAndRemoveIt() = runBlocking {
+        val src = "\\relative c'' { \\key g \\major b4 c d2 | e4 d c b | a1 }"
+        val added = tools.addVoice(src, listOf(src.indexOf("b4"), src.indexOf("d2")))
+        var text = added.edit.applyTo(src)
+        var at = added.start
+        // Note entry, filling the new voice's rest: g a fis2.
+        for ((key, d) in listOf(55 to "4", 57 to "4", 54 to "2")) {
+            val r = tools.insert(text, at, listOf(key), d, after = true, fill = true)
+            text = r.edit.applyTo(text)
+            at = r.start
+        }
+        assertTrue(text, text.contains("<< { b4 c d2 } \\\\ { g,,4 a fis2 } >>"))
+        val engraved = heads(text)
+        assertEquals(listOf("b'", "c''", "d''"), engraved["1"])
+        assertEquals(listOf("g", "a", "fis"), engraved["2"]) // MIDI 55, 57, 54
+        // The bars after are as before.
+        assertEquals(heads(src)[""]!!.drop(3), engraved[""])
+
+        // Removing either voice: the other plays alone, as engraved.
+        assertEquals(heads(src), heads(tools.removeVoice(text, text.indexOf("fis2")).applyTo(text)))
+        val voiceTwoOnly = heads(tools.removeVoice(text, text.indexOf("b4")).applyTo(text))[""]!!
+        assertEquals(listOf("g", "a", "fis") + heads(src)[""]!!.drop(3), voiceTwoOnly)
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

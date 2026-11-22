@@ -159,6 +159,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var entering by remember { mutableStateOf(false) }
     var entryDuration by remember { mutableStateOf("4") }
     var entryDot by remember { mutableStateOf(false) }
+    /** New notes take the place of rests after the selected note (as in a voice just added). */
+    var fillRests by remember { mutableStateOf(true) }
     /** Notes and chords waiting to be entered (MIDI keys; empty for a rest), in playing order. */
     val entries = remember { Channel<List<Int>>(Channel.UNLIMITED) }
     val connectedKeyboard by keyboard.connected.collectAsState()
@@ -362,6 +364,32 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         }
     }
 
+    /** Adds a second voice over the range (or the selected note): rests to be filled by note entry. */
+    fun addVoice() {
+        val offsets = range.ifEmpty { listOfNotNull(selectedOffset) }
+        if (busy || offsets.isEmpty()) return
+        busy = true
+        scope.launch {
+            try {
+                val before = text.text
+                val r = tools.addVoice(before, offsets)
+                undo.addLast(before)
+                val after = r.edit.applyTo(before)
+                selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
+                range = emptyList()
+                selectedOffset = r.start
+                text = TextFieldValue(after, TextRange(r.start, SourcePositions.tokenEnd(after, r.start)))
+                entering = true
+                fillRests = true
+                status = "Added a voice: play or tap its notes, and they take the place of the rests."
+            } catch (ex: LilyTools.EditException) {
+                status = "Can't add a voice here: ${ex.message}"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     /** A slur or hairpin over the range: from its first to its last note or rest in each voice. */
     fun spanRange(kind: String) {
         val r = renderedText
@@ -417,7 +445,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 val selected = selectedOffset?.takeIf { it < before.length }
                 val at = selected ?: text.selection.start
                 val duration = entryDuration + if (entryDot) "." else ""
-                val r = tools.insert(before, at, keys, duration, after = selected != null)
+                val r = tools.insert(before, at, keys, duration, after = selected != null, fill = fillRests)
                 undo.addLast(before)
                 val after = r.edit.applyTo(before)
                 selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
@@ -543,6 +571,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     onDuration = { entryDuration = it },
                     onDot = { entryDot = !entryDot },
                     onRest = { entries.trySend(emptyList()) },
+                    fillRests = fillRests,
+                    onFillRests = { fillRests = !fillRests },
                     onUndo = ::undoLast,
                 ) else {
                     val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
@@ -578,6 +608,12 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         onDelete = {
                             if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) }
                             else edit { src, off -> tools.delete(src, off) }
+                        },
+                        onAddVoice = ::addVoice,
+                        inVoice = selected?.voiceId?.isNotEmpty() == true,
+                        onRemoveVoice = {
+                            range = emptyList()
+                            edit { src, off -> tools.removeVoice(src, off) }
                         },
                         onUndo = ::undoLast,
                     )
@@ -751,6 +787,8 @@ private fun EntryBar(
     onDuration: (String) -> Unit,
     onDot: () -> Unit,
     onRest: () -> Unit,
+    fillRests: Boolean,
+    onFillRests: () -> Unit,
     onUndo: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 4.dp, vertical = 2.dp)) {
@@ -767,6 +805,8 @@ private fun EntryBar(
             if (dot) Button(onClick = onDot, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Dot") }
             else OutlinedButton(onClick = onDot, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Dot") }
             OutlinedButton(onClick = onRest, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Rest") }
+            if (fillRests) Button(onClick = onFillRests, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Fill rests") }
+            else OutlinedButton(onClick = onFillRests, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Fill rests") }
             OutlinedButton(onClick = onUndo, enabled = canUndo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Undo") }
             Text(
                 (if (hasPlace) "After the selected note. " else "At the cursor. ") +
@@ -893,6 +933,10 @@ private fun EditBar(
     onDuration: (String) -> Unit,
     onDot: () -> Unit,
     onDelete: () -> Unit,
+    onAddVoice: () -> Unit,
+    /** The selection is in one of several voices, so its voice can be removed. */
+    inVoice: Boolean,
+    onRemoveVoice: () -> Unit,
     onUndo: () -> Unit,
 ) {
     Row(
@@ -910,6 +954,8 @@ private fun EditBar(
         for (d in listOf("1", "2", "4", "8", "16")) B(d, enabled) { onDuration(d) }
         B("Dot", enabled, onDot)
         B("Delete", enabled, onDelete)
+        B("Add voice", enabled, onAddVoice)
+        B("Remove voice", enabled && inVoice, onRemoveVoice)
         B("Undo", canUndo, onUndo)
     }
 }

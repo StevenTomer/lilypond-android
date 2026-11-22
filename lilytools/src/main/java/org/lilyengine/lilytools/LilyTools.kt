@@ -133,6 +133,26 @@ class LilyTools(context: Context) {
         RangeEdit(TextEdit.between(text, result), (0 until positions.length()).map { result.offsetByCodePoints(0, positions.getInt(it)) })
     }
 
+    /**
+     * Makes the items at [offsets] (one stretch of one voice) the first voice
+     * of `<< { … } \\ { rests } >>`, the rests as long as the stretch, so a
+     * second voice can be entered there. [Inserted.start] is the first rest.
+     */
+    suspend fun addVoice(text: String, offsets: List<Int>): Inserted = withContext(dispatcher) {
+        val request = JSONObject().put("op", "add_voice").put("text", text)
+            .put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) }))
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val result = reply.getString("text")
+        Inserted(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")))
+    }
+
+    /** Removes the voice [offset] is in from the `<< { } \\ { } >>` around it; the other music sounds as before. */
+    suspend fun removeVoice(text: String, offset: Int): TextEdit = call(
+        text,
+        JSONObject().put("op", "remove_voice").put("pos", text.codePointCount(0, offset)),
+    )
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))
@@ -163,13 +183,21 @@ class LilyTools(context: Context) {
      * the key in effect there (61 is cis in G major, des in F major) and get
      * the octave marks that make them sound as played, in \relative music
      * too, and in either voice of `<< { } \\ { } >>`.
+     *
+     * With [fill] (and [after] and a [duration]), a rest at [offset], or
+     * right after the item there in the same voice, is filled instead: the
+     * new item takes its place, and what is left of it stays as rests. So a
+     * voice added with [addVoice] fills up as notes are played.
      */
-    suspend fun insert(text: String, offset: Int, keys: List<Int>, duration: String? = null, after: Boolean = false): Inserted =
+    suspend fun insert(
+        text: String, offset: Int, keys: List<Int>, duration: String? = null, after: Boolean = false, fill: Boolean = false,
+    ): Inserted =
         withContext(dispatcher) {
             val request = JSONObject().put("op", "insert").put("text", text)
                 .put("pos", text.codePointCount(0, offset))
                 .put("keys", org.json.JSONArray(keys))
                 .put("after", after)
+                .put("fill", fill)
             duration?.let { request.put("duration", it) }
             val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
             if (reply.has("error")) throw EditException(reply.getString("error"))
