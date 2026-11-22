@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -165,6 +166,7 @@ fun ScoreView(
 
     BoxWithConstraints(
         modifier
+            .clipToBounds() // zoomed pages are wider than the view
             .background(Color(0xFFE0E0E0))
             .onSizeChanged { state.viewportWidth = it.width.toFloat() }
             .pointerInput(state) { pinchAndPan(state) },
@@ -231,8 +233,10 @@ fun ScoreView(
                             }
                             for (g in selection) {
                                 if (g.page != page || g.book != lookup.book) continue
-                                val (o, s) = box(g, 0.2f)
-                                drawRect(voiceColor(g.voice, voices).copy(alpha = 0.3f), o, s)
+                                val (o, s) = box(g, 0.25f)
+                                val color = voiceColor(g.voice, voices)
+                                drawRect(color.copy(alpha = 0.4f), o, s)
+                                drawRect(color, o, s, style = Stroke(width = 2.dp.toPx()))
                             }
                             hover?.takeIf { it.page == page }?.let { g ->
                                 val (o, s) = box(g, 0.3f)

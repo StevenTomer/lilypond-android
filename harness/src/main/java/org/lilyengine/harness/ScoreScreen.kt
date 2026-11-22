@@ -181,7 +181,8 @@ fun ScoreScreen(engine: LilyPondEngine) {
                         if (moved) selectFromCursor(v)
                     },
                     textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii),
+                    // Password mode turns off word suggestions and learning (the text isn't hidden).
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth().focusRequester(focus),
                 )
             }
