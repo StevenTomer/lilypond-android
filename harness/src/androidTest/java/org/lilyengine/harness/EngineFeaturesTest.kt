@@ -43,6 +43,35 @@ class EngineFeaturesTest {
     }
 
     @Test
+    fun windowOfMidi2lyOutputNeitherCrashesNorWritesMidi() = runBlocking {
+        // midi2ly's layout splits long notes at bar lines (Completion_heads_engraver).
+        // A window ending at the bar line the g4 crosses used to crash LilyPond
+        // (signal 11), as showFirstLength still does; and the score's own \midi
+        // block used to make the window write MIDI, which LilyPond's performers
+        // choke on.
+        val src = """
+            \version "2.26.0"
+            \layout { \context { \Voice \remove Note_heads_engraver \consists Completion_heads_engraver
+                \remove Rest_engraver \consists Completion_rest_engraver } }
+            \score {
+              \new Staff \new Voice \relative c { b' r8. r8 f cis8. b,4 <c gis > <f b, >8 ais16*5 g4 }
+              \layout { }
+              \midi { }
+            }
+        """.trimIndent()
+        for ((start, end) in listOf("0" to "2", "1/2" to "2", "0" to "1")) {
+            val r = engine.render(src, LilyPondEngine.Options(window = start to end))
+            assertEquals("window $start-$end\n${r.log}", 0, r.exitCode)
+            assertTrue(r.log, r.success)
+            assertTrue("no MIDI for a window", r.midi.isEmpty())
+            val moments = r.scoreMap!!.grobs.filter { it.type == "NoteHead" }.mapNotNull { it.momentValue }
+            assertTrue("moments $moments", moments.isNotEmpty() && moments.all { it >= start.toFraction() && it < end.toFraction() })
+        }
+    }
+
+    private fun String.toFraction(): Double = split("/").let { it[0].toDouble() / (it.getOrNull(1)?.toDouble() ?: 1.0) }
+
+    @Test
     fun scoreMapSeparatesVoices() = runBlocking {
         val r = engine.render(POLY_SAMPLE)
         assertTrue(r.log, r.success)

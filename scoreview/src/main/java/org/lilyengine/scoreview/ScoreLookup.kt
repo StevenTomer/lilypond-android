@@ -54,6 +54,19 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
             )?.first
     }
 
+    /**
+     * The one of [candidates] on [page] closest to a point, if it is within
+     * [slop] staff spaces: for grabbing an already selected note with a
+     * finger, which covers more than the note head.
+     */
+    fun nearestOf(candidates: Collection<Grob>, page: Int, xPt: Double, yPt: Double, slop: Double): Grob? {
+        val (x, y) = toStaffSpaces(xPt, yPt)
+        return candidates.filter { it.page == page && it.book == book }
+            .map { it to distance(it, x, y) }
+            .filter { it.second <= slop }
+            .minByOrNull { it.second }?.first
+    }
+
     /** All printed objects made by the same piece of source (a note's head, accidental, dots). */
     fun sameOrigin(grob: Grob): List<Grob> = grob.origin?.let { byOrigin[it] }.orEmpty()
 

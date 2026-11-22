@@ -70,6 +70,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import org.lilyengine.engine.Diagnostic
 import org.lilyengine.engine.LilyPondEngine
+import org.lilyengine.engine.RenderProgress
 import org.lilyengine.engine.ScoreMap.Grob
 import org.lilyengine.scoreview.ScoreDocument
 import org.lilyengine.scoreview.ScoreLookup
@@ -81,6 +82,7 @@ import org.lilyengine.midi.ChordCollector
 import org.lilyengine.midi.MidiKeyboard
 import org.lilyengine.midi.MidiFile
 import org.lilyengine.midi.MidiPlayer
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
@@ -102,6 +104,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var renderedText by remember { mutableStateOf("") }
     var midi by remember { mutableStateOf<java.io.File?>(null) }
     var status by remember { mutableStateOf("Rendering…") }
+    /** The log of the last render that failed, for sharing. */
+    var failedLog by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<Diagnostic?>(null) }
     var selection by remember { mutableStateOf<List<Grob>>(emptyList()) }
     var viewHeight by remember { mutableStateOf(0) }
@@ -165,15 +169,49 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     }
     /** Set by an edit: the text it produced and the moment of the edited note. */
     val pendingEdit = remember { mutableStateOf<Pair<String, String>?>(null) }
+    /** Set by a MIDI import: its text, of which the first bars are shown before the whole score. */
+    val pendingImport = remember { mutableStateOf<String?>(null) }
+
+    /**
+     * Renders the whole score, showing in [status] how far LilyPond has got,
+     * since a long score (an imported orchestral MIDI file) can take minutes.
+     */
+    suspend fun renderWhole(source: String, what: String): LilyPondEngine.Result = coroutineScope {
+        val progress = RenderProgress()
+        val start = System.nanoTime()
+        val ticker = launch {
+            delay(1500) // most renders are done by now
+            while (true) {
+                status = "$what: ${progress.phase} (${(System.nanoTime() - start) / 1_000_000_000} s)…"
+                delay(500)
+            }
+        }
+        try {
+            engine.render(
+                source,
+                LilyPondEngine.Options(midi = true, scoreMap = true, timeoutSeconds = WHOLE_SCORE_TIMEOUT_S, onOutput = progress::onOutput),
+            )
+        } finally {
+            ticker.cancel()
+        }
+    }
 
     /** Shows a render's PDF and score map; returns false if it failed. */
     suspend fun show(r: LilyPondEngine.Result, source: String): Boolean {
         error = r.diagnostics.firstOrNull { it.severity == Diagnostic.Severity.ERROR }
         val pdf = r.outputs.firstOrNull()
         if (!r.success || pdf == null) {
-            status = "LilyPond failed" + (error?.let { ": line ${it.line}: ${it.message}" } ?: "")
+            status = "LilyPond failed" + when {
+                error != null -> ": line ${error!!.line}: ${error!!.message}"
+                r.log.trimEnd().endsWith("s]") && "[timed out after" in r.log ->
+                    ": it took longer than ${WHOLE_SCORE_TIMEOUT_S / 60} minutes and was stopped"
+                r.exitCode >= 128 -> ": it crashed (signal ${r.exitCode - 128})"
+                else -> " (exit code ${r.exitCode})"
+            }
+            failedLog = r.log
             return false
         }
+        failedLog = null
         val newDoc = ScoreDocument.open(pdf)
         document?.close()
         document = newDoc
@@ -202,8 +240,17 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             .collectLatest { source ->
                 val edit = pendingEdit.value?.takeIf { it.first == source }
                 pendingEdit.value = null
+                val imported = pendingImport.value == source
+                pendingImport.value = null
                 val l = lookup
-                if (edit != null && l != null && lastFullMillis > PREVIEW_THRESHOLD_MS) {
+                if (imported) {
+                    // An imported file can be long: show its beginning first.
+                    status = "Engraving the first bars…"
+                    val p = engine.render(source, LilyPondEngine.Options(midi = false, scoreMap = true, window = "0" to FIRST_LOOK_WHOLE_NOTES))
+                    if (show(p, source)) {
+                        status = "Preview: the first bars (${p.elapsedMillis} ms); whole score in progress…"
+                    }
+                } else if (edit != null && l != null && lastFullMillis > PREVIEW_THRESHOLD_MS) {
                     status = "Engraving the bars around the edit…"
                     val window = l.windowAround(edit.second)
                     val p = engine.render(source, LilyPondEngine.Options(midi = false, scoreMap = true, window = window))
@@ -213,7 +260,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 } else {
                     status = "Rendering…"
                 }
-                val r = engine.render(source, LilyPondEngine.Options(midi = true, scoreMap = true))
+                val r = renderWhole(source, if (lookup != null && renderedText == source) "Whole score" else "Rendering")
                 if (show(r, source)) {
                     lastFullMillis = r.elapsedMillis
                     midi = r.midi.firstOrNull()
@@ -342,6 +389,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         undo.addLast(text.text)
                         selectedOffset = null
                         selection = emptyList()
+                        pendingImport.value = imported.text
                         text = TextFieldValue(imported.text)
                     } catch (e: LilyTools.EditException) {
                         status = "MIDI import failed: ${e.message}"
@@ -388,7 +436,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         }
                     }) { Text(if (playback != null) "Stop" else if (selection.isNotEmpty()) "Play from here" else "Play") }
                 }
-                Text(status, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(status, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp).weight(1f))
+                    failedLog?.let { log ->
+                        TextButton(onClick = {
+                            shareText(context, "LilyPond log", SelfTest.deviceInfo() + "\n" + log.takeLast(SHARED_LOG_CHARS))
+                        }) { Text("Share log") }
+                    }
+                }
                 SelectionInfo(selection, lookup)
                 if (entering) EntryBar(
                     duration = entryDuration,
@@ -700,6 +755,18 @@ private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?) {
 
 /** Above this, an edit first engraves only the bars around it (see [ScoreLookup.windowAround]). */
 private const val PREVIEW_THRESHOLD_MS = 1500L
+
+/** How much of an imported file is engraved first, in whole notes: 4 bars of 4/4. */
+private const val FIRST_LOOK_WHOLE_NOTES = "4"
+
+/** The end of a failed render's log that "Share log" sends (the start is mostly warnings). */
+private const val SHARED_LOG_CHARS = 20_000
+
+/**
+ * A whole-score render may take this long before it's given up: a long
+ * orchestral import takes minutes on a tablet, and a new edit cancels it anyway.
+ */
+private const val WHOLE_SCORE_TIMEOUT_S = 1800L
 
 /** 400 bars of piano music with two voices in the right hand: about 15 pages. */
 private val LONG_SAMPLE = pianoPiece(400)

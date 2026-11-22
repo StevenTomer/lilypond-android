@@ -57,6 +57,12 @@ class LilyPondEngine(context: Context) {
         /** Extra directories searched by \include. */
         val includeDirs: List<File> = emptyList(),
         val timeoutSeconds: Long = 300,
+        /**
+         * Called on a background thread as LilyPond prints: with the line
+         * printed so far, whenever it grows (an empty string after a line
+         * break). For showing progress; see [RenderProgress].
+         */
+        val onOutput: ((String) -> Unit)? = null,
     )
 
     /**
@@ -92,7 +98,7 @@ class LilyPondEngine(context: Context) {
     suspend fun version(): String = withContext(Dispatchers.IO) {
         val root = prepare()
         val work = File(appContext.cacheDir, "lilypond-version").apply { mkdirs() }
-        run(root, work, listOf("--version"), emptyMap(), timeoutSeconds = 60).second.trim()
+        run(root, work, listOf("--version"), emptyMap(), timeoutSeconds = 60, onOutput = null).second.trim()
     }
 
     /** Typesets [source] (LilyPond input) in a fresh job directory. */
@@ -159,7 +165,7 @@ class LilyPondEngine(context: Context) {
             add(input.path)
         }
         val start = System.nanoTime()
-        val (exit, log) = run(root, job, args, env, options.timeoutSeconds)
+        val (exit, log) = run(root, job, args, env, options.timeoutSeconds, options.onOutput)
         val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
 
         val byPageOrder = compareBy<File>({ it.name.length }, { it.name })
@@ -185,6 +191,7 @@ class LilyPondEngine(context: Context) {
         args: List<String>,
         extraEnv: Map<String, String>,
         timeoutSeconds: Long,
+        onOutput: ((String) -> Unit)?,
     ): Pair<Int, String> {
         val native = File(nativeDir, "liblilypond.so")
         check(native.canExecute()) { "LilyPond executable missing: $native" }
@@ -200,8 +207,22 @@ class LilyPondEngine(context: Context) {
         val out = StringBuilder()
         val reader = Thread {
             try {
-                proc.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { synchronized(out) { out.appendLine(it) } }
+                // By character, not by line: LilyPond's bar counter ("[8][16]…")
+                // comes without line breaks until the phase ends.
+                val line = StringBuilder()
+                proc.inputStream.bufferedReader().use { r ->
+                    val buf = CharArray(4096)
+                    while (true) {
+                        val n = r.read(buf)
+                        if (n < 0) break
+                        synchronized(out) { out.appendRange(buf, 0, n) }
+                        for (i in 0 until n) {
+                            val ch = buf[i]
+                            if (ch == '\n') line.setLength(0) else line.append(ch)
+                            if (onOutput != null && (ch == '\n' || ch == ']')) runCatching { onOutput(line.toString()) }
+                        }
+                        if (onOutput != null && n > 0 && buf[n - 1] != '\n' && buf[n - 1] != ']') runCatching { onOutput(line.toString()) }
+                    }
                 }
             } catch (_: java.io.IOException) {
                 // The stream closes under us when a cancelled or timed-out

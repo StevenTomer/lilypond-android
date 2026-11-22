@@ -123,6 +123,19 @@ This plan covers the pieces needed before the editor and the editor phases after
     (`ScoreLookup.soundingAt`) and keeps them in view.
   - Limits: MIDI ticks are mapped to moments directly, so repeats unfolded only in MIDI
     and grace notes put the cursor off. FluidSynth is still to come.
+- **0.9.1, fixes from the first tablet tests:**
+  - Big MIDI imports: midi2ly turns a 13-track song into ~120 pages, which took longer
+    than the old 300 s limit on the tablet. The first 4 whole notes are now engraved
+    first. The whole score then renders with a 30-minute limit, and the status shows
+    LilyPond's phase and bar (`RenderProgress`, fed by `Options.onOutput`).
+  - Fast-preview windows crashed LilyPond (signal 11) when the window ended at a bar
+    line that a note split by `Completion_heads_engraver` crosses, as midi2ly's output
+    uses it. LilyPond's own `showFirstLength` crashes the same way. `window.ly` now
+    stops the music 1/1024 before the window's end, and no longer writes MIDI when the
+    score has its own `\midi` block (it tested a property that 2.26 doesn't set).
+  - A finger long press grabs the nearest note within 24 dp and selects it if it
+    wasn't selected. The drag is summed from each move, so the selection info growing
+    doesn't make the note jump.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

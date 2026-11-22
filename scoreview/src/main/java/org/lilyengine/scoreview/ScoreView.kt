@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -165,6 +166,10 @@ fun ScoreView(
     onDragSteps: ((Grob, Int) -> Unit)? = null,
 ) {
     var hover by remember { mutableStateOf<Grob?>(null) }
+    // Read inside the drag gesture, which mustn't restart when a long press selects a note.
+    val currentSelection by rememberUpdatedState(selection)
+    val currentOnTap by rememberUpdatedState(onTap)
+    val currentOnDragSteps by rememberUpdatedState(onDragSteps)
     val haptics = LocalHapticFeedback.current
     /** A note head being dragged with the pen, and by how many staff positions. */
     var drag by remember { mutableStateOf<Pair<Grob, Int>?>(null) }
@@ -215,16 +220,26 @@ fun ScoreView(
                                 onTap(lookup?.objectAt(page, (off.x * k).toDouble(), (off.y * k).toDouble()))
                             }
                         }
-                        .pointerInput(lookup, page, wPt, selection, onDragSteps) {
-                            if (lookup == null || onDragSteps == null) return@pointerInput
+                        .pointerInput(lookup, page, wPt, onDragSteps != null) {
+                            if (lookup == null || currentOnDragSteps == null) return@pointerInput
                             awaitEachGesture {
                                 // The Initial pass reaches this page before the list sees the
                                 // event, so a drag claimed here never scrolls or pans.
                                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                                 val k = wPt / size.width
-                                val g = lookup.objectAt(page, (down.position.x * k).toDouble(), (down.position.y * k).toDouble())
-                                    ?.takeIf { it.type == "NoteHead" && it in selection } ?: return@awaitEachGesture
+                                val x = (down.position.x * k).toDouble()
+                                val y = (down.position.y * k).toDouble()
                                 val pen = down.type == PointerType.Stylus || down.type == PointerType.Eraser
+                                val g = if (pen) {
+                                    lookup.objectAt(page, x, y)?.takeIf { it.type == "NoteHead" && it in currentSelection }
+                                } else {
+                                    // A fingertip covers more than a note head, and the point it
+                                    // reports is often off the head: take the nearest selected
+                                    // note, or else any note in reach (selected on the long press).
+                                    val slop = maxOf(FINGER_REACH.toPx() * k / lookup.pointsPerStaffSpace, 0.6)
+                                    lookup.nearestOf(currentSelection.filter { it.type == "NoteHead" }, page, x, y, slop)
+                                        ?: lookup.objectAt(page, x, y, slop)?.takeIf { it.type == "NoteHead" }
+                                } ?: return@awaitEachGesture
                                 if (!pen) {
                                     // A finger has to hold still on the note first (long press);
                                     // otherwise it's a tap or a scroll as usual.
@@ -240,22 +255,27 @@ fun ScoreView(
                                     }
                                     if (aborted == true) return@awaitEachGesture
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    if (g !in currentSelection) currentOnTap(g)
                                 }
                                 state.noteDrag = true
                                 down.consume()
                                 // Half a staff space (one line or space) in pixels.
                                 val stepPx = ((g.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2 / k).toFloat()
                                 drag = g to 0
+                                // Summed from each move rather than measured from the first
+                                // touch: selecting the note can shift the page under the finger.
+                                var dy = 0f
                                 try {
                                     while (true) {
                                         val c = awaitPointerEvent(PointerEventPass.Initial).changes
                                             .firstOrNull { it.id == down.id } ?: break
                                         c.consume() // not a scroll, pan or tap
-                                        drag = g to -((c.position.y - down.position.y) / stepPx).roundToInt()
+                                        dy += c.position.y - c.previousPosition.y
+                                        drag = g to -(dy / stepPx).roundToInt()
                                         if (!c.pressed) break
                                     }
                                     val steps = drag?.second ?: 0
-                                    if (steps != 0) onDragSteps(g, steps)
+                                    if (steps != 0) currentOnDragSteps?.invoke(g, steps)
                                 } finally {
                                     drag = null
                                     state.noteDrag = false
@@ -306,6 +326,13 @@ fun ScoreView(
                                 val color = voiceColor(g.voice, voices)
                                 drawOval(color.copy(alpha = 0.5f), o.copy(y = o.y + dy), sz)
                                 drawOval(color, o.copy(y = o.y + dy), sz, style = Stroke(width = 2.dp.toPx()))
+                                // A ring around the grabbed note: the drag has started.
+                                drawCircle(
+                                    color,
+                                    radius = 1.6f * lookup.pointsPerStaffSpace.toFloat() * px,
+                                    center = Offset(o.x + sz.width / 2, o.y + sz.height / 2),
+                                    style = Stroke(width = 3.dp.toPx()),
+                                )
                             }
                             hover?.takeIf { it.page == page }?.let { g ->
                                 val (o, s) = box(g, 0.3f)
@@ -341,3 +368,6 @@ private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.pinchAnd
         } while (event.changes.any { it.pressed })
     }
 }
+
+/** How far from a selected note head a finger can be and still grab it. */
+private val FINGER_REACH = 24.dp
