@@ -928,6 +928,110 @@ def fill(text, pos, keys, duration):
 
 
 # --------------------------------------------------------------------------
+# Checking that the voices of a << { } \\\\ { } >> passage are equally long
+
+# Music whose length isn't simply the sum of its durations: not checked.
+_UNCHECKED = re.compile(r"\\(tuplet|times|grace|acciaccatura|appoggiatura|afterGrace|repeat|scaleDurations|partial|tag|keepWithTag|removeWithTag)\b|<<|\\[a-zA-Z]+\s*=")
+
+
+def _all_voice_passages(text):
+    """Every `<< … \\\\ … >>` in the text, innermost too: (start, end, parts)."""
+    found = []
+    stack = []
+    i = 0
+    while i < len(text):
+        if text[i] == "%":
+            nl = text.find("\n", i)
+            i = len(text) if nl < 0 else nl
+            continue
+        if text[i] == '"':
+            j = text.find('"', i + 1)
+            i = len(text) if j < 0 else j + 1
+            continue
+        if text.startswith("<<", i):
+            stack.append(i)
+            i += 2
+            continue
+        if text.startswith(">>", i) and stack:
+            start = stack.pop()
+            try:
+                s, e, parts = _enclosing_voices(text, start + 2)
+                if s == start:
+                    found.append((s, e, parts))
+            except ValueError:
+                pass
+            i += 2
+            continue
+        i += 1
+    return found
+
+
+def _part_length(text, items, a, b):
+    """The length in whole notes of the music between offsets a and b, or
+    None if it can't simply be added up."""
+    inner = text[a:b].strip()
+    if inner.startswith("{") and inner.endswith("}"):
+        inner = inner[1:-1]
+    if _UNCHECKED.search(inner):
+        return None
+    total = Fraction(0)
+    for it, _, eff in items:
+        if a <= it.pos < b:
+            v = _dur_value(eff)
+            if v is None:
+                return None
+            total += v
+    return total
+
+
+def voice_lengths(text):
+    """The `<< { } \\\\ { } >>` passages whose voices aren't all equally long:
+    a list of (start, end, [length of each voice in whole notes]). Passages
+    with tuplets, grace notes, repeats or nested << >> aren't checked."""
+    items = _items(text)
+    out = []
+    for start, end, parts in _all_voice_passages(text):
+        lengths = [_part_length(text, items, a, b) for a, b in parts]
+        if None in lengths or len(set(lengths)) <= 1:
+            continue
+        out.append((start, end, lengths))
+    return out
+
+
+def pad_voices(text, pos):
+    """Fills the shorter voices of the passage at `pos` with rests at their
+    end, up to the longest. Returns the text."""
+    start, end, parts = _enclosing_voices(text, pos)
+    items = _items(text)
+    lengths = [_part_length(text, items, a, b) for a, b in parts]
+    if None in lengths:
+        raise ValueError("can't work out how long these voices are (tuplets, grace notes or repeats)")
+    longest = max(lengths)
+    before = notes(text)
+    # The item after the >> keeps its duration: LilyPond carries on with
+    # the last one written in the passage.
+    after = [x for x in items if x[0].pos >= end]
+    if after and after[0][1] is None:
+        text = _write_duration(text, after[0][0], after[0][2])
+    for (a, b), length in sorted(zip(parts, lengths), reverse=True):
+        if length == longest:
+            continue
+        rests = " ".join("r" + d for d in _durations_for(longest - length))
+        inner_end = text.rfind("}", a, b)
+        if inner_end < 0:  # a voice without braces
+            inner_end = b
+            while inner_end > a and text[inner_end - 1].isspace():
+                inner_end -= 1
+            text = text[:inner_end] + " " + rests + text[inner_end:]
+        else:
+            k = inner_end
+            while k > a and text[k - 1].isspace():
+                k -= 1
+            text = text[:k] + " " + rests + text[k:]
+    return _fix_octaves(text, [n.key() for n in before])
+
+
+# --------------------------------------------------------------------------
 # Entry point for Kotlin: one JSON request in, one JSON reply out.
 
 
@@ -976,6 +1080,12 @@ def call(request_json):
             if r is None:
                 return json.dumps({"none": True})
             return json.dumps({"text": r[0], "start": r[1]})
+        elif op == "voice_lengths":
+            return json.dumps({"passages": [
+                {"start": a, "end": b, "lengths": [str(x) for x in lengths]}
+                for a, b, lengths in voice_lengths(text)]})
+        elif op == "pad_voices":
+            out = pad_voices(text, req["pos"])
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":

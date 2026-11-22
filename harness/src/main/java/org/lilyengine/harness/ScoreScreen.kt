@@ -327,6 +327,13 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         }
     }
 
+    /** Passages whose voices aren't equally long (checked shortly after each change). */
+    var uneven by remember { mutableStateOf<List<LilyTools.VoicePassage>>(emptyList()) }
+    LaunchedEffect(text.text) {
+        delay(VOICE_CHECK_DELAY_MS)
+        uneven = runCatching { tools.voiceLengths(text.text) }.getOrDefault(emptyList())
+    }
+
     /** The marks on the selected note, or on every item of the range (articulations, dynamics, slurs…), as LilyTools.toggle names them. */
     var selectedMarks by remember { mutableStateOf(emptySet<String>()) }
     LaunchedEffect(selectedOffset, range, text.text) {
@@ -563,6 +570,26 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         TextButton(onClick = {
                             shareText(context, "LilyPond log", SelfTest.deviceInfo() + "\n" + log.takeLast(SHARED_LOG_CHARS))
                         }) { Text("Share log") }
+                    }
+                }
+                uneven.firstOrNull()?.let { p ->
+                    val line = SourcePositions.locationOf(text.text, p.start.coerceAtMost(text.text.length)).first
+                    Row(
+                        Modifier.fillMaxWidth().background(Color(0xFFFFF3E0)).padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "⚠ Line $line: voices of unequal length (" + p.lengths.joinToString(" / ") + " whole notes)" +
+                                if (uneven.size > 1) ", +${uneven.size - 1} more" else "",
+                            fontSize = 13.sp, modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = {
+                            if (p.end <= text.text.length) {
+                                text = text.copy(selection = TextRange(p.start, p.end))
+                                selectFromCursor(text)
+                            }
+                        }) { Text("Go there") }
+                        TextButton(onClick = { edit(p.start + 2) { src, off -> tools.padVoices(src, off) } }) { Text("Fill with rests") }
                     }
                 }
                 SelectionInfo(selection, lookup, range.size)
@@ -916,6 +943,9 @@ private const val LINES = "Lines"
 
 /** With a range selected, slurs and hairpins go over it (LilyTools.span's kinds). */
 private val RANGE_LINES = listOf("slur" to "slur ( )", "cresc" to "cresc <", "decresc" to "dim >")
+
+/** How long after a change the voices are checked for equal lengths. */
+private const val VOICE_CHECK_DELAY_MS = 700L
 
 /** Above this many items in a range, the marks on all of them aren't looked up. */
 private const val MAX_MARKS_LOOKUPS = 40

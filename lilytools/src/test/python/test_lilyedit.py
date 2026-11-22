@@ -413,5 +413,37 @@ class StaffSteps(unittest.TestCase):
         self.assertEqual(reply["keys"], [78])
 
 
+
+class VoiceLengths(unittest.TestCase):
+    SRC = "\\relative c'' { << { c4 e g e } \\\\ { c,2 } >> d1 | << { a2 } \\\\ { f4 g } >> c }"
+
+    def test_finds_the_short_voice(self):
+        found = e.voice_lengths(self.SRC)
+        self.assertEqual([(self.SRC[a:a + 2], lengths) for a, _, lengths in found], [("<<", [1, Fraction(1, 2)])])
+
+    def test_pad_with_rests_keeps_the_music_after(self):
+        out = e.pad_voices(self.SRC, self.SRC.index("c,2"))
+        self.assertEqual(out, "\\relative c'' { << { c4 e g e } \\\\ { c,2 r2 } >> d1 | << { a2 } \\\\ { f4 g } >> c }")
+        self.assertEqual(e.voice_lengths(out), [])
+        self.assertEqual(absolute(out), absolute(self.SRC))
+
+    def test_duration_after_the_passage_is_kept(self):
+        src = "\\relative c'' { << { c4 e g e } \\\\ { c,2 } >> d | c }"
+        self.assertIn(">> d2 | c }", e.pad_voices(src, src.index("c,2")))
+
+    def test_three_voices(self):
+        src = "{ << { c'2 d' } \\\\ { e1 } \\\\ { g4 } >> }"
+        out = e.pad_voices(src, src.index("g4"))
+        self.assertEqual(out, "{ << { c'2 d' } \\\\ { e1 } \\\\ { g4 r2. } >> }")
+
+    def test_tuplets_are_not_checked(self):
+        src = "{ << { c'4 d' e'2 } \\\\ { \\tuplet 3/2 { c'4 d' e' } } >> }"
+        self.assertEqual(e.voice_lengths(src), [])
+
+    def test_through_call(self):
+        reply = json.loads(e.call(json.dumps({"op": "voice_lengths", "text": self.SRC})))
+        self.assertEqual(reply["passages"][0]["lengths"], ["1", "1/2"])
+
+
 if __name__ == "__main__":
     unittest.main()

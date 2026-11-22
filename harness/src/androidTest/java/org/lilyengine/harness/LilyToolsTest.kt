@@ -126,6 +126,29 @@ class LilyToolsTest {
     }
 
     @Test
+    fun unevenVoicesAreFoundAndPadded() = runBlocking {
+        // Voice 2 is half a bar short: LilyPond leaves the rest of its bar blank.
+        val src = "\\relative c'' { \\time 4/4 << { c4 e g e } \\\\ { c,2 } >> d1 | c1 }"
+        val found = tools.voiceLengths(src)
+        assertEquals(listOf("1", "1/2"), found.single().lengths)
+        assertEquals("<<", src.substring(found.single().start, found.single().start + 2))
+        suspend fun voiceTwoRests(text: String): Int {
+            val r = engine.render(text)
+            assertTrue(r.log, r.success)
+            // The d after the passage starts when the longer voice ends, either way.
+            assertEquals(1.0, r.scoreMap!!.grobs.single { it.type == "NoteHead" && it.pitch?.notename == 1 }.momentValue!!, 1e-9)
+            return r.scoreMap!!.grobs.count { it.type == "Rest" && it.voiceId == "2" }
+        }
+        assertEquals(0, voiceTwoRests(src))
+
+        val padded = tools.padVoices(src, found.single().start + 2).applyTo(src)
+        assertTrue(padded, padded.contains("{ c,2 r2 }"))
+        assertTrue(tools.voiceLengths(padded).isEmpty())
+        assertEquals(1, voiceTwoRests(padded))
+        assertEquals(heads(src).values.flatten().sorted(), heads(padded).values.flatten().sorted())
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

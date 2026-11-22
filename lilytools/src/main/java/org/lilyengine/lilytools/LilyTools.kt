@@ -153,6 +153,37 @@ class LilyTools(context: Context) {
         JSONObject().put("op", "remove_voice").put("pos", text.codePointCount(0, offset)),
     )
 
+    /** A `<< { } \\ { } >>` passage, [start] to [end], whose voices last [lengths] (in whole notes, e.g. "3/4"). */
+    data class VoicePassage(val start: Int, val end: Int, val lengths: List<String>)
+
+    /**
+     * The passages with voices of different lengths: LilyPond leaves the
+     * end of a shorter voice blank (the music after starts when the longest
+     * ends). Passages with tuplets, grace notes, repeats or nested << >>
+     * aren't checked.
+     */
+    suspend fun voiceLengths(text: String): List<VoicePassage> = withContext(dispatcher) {
+        val request = JSONObject().put("op", "voice_lengths").put("text", text)
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val list = reply.getJSONArray("passages")
+        List(list.length()) { i ->
+            val p = list.getJSONObject(i)
+            val lengths = p.getJSONArray("lengths")
+            VoicePassage(
+                text.offsetByCodePoints(0, p.getInt("start")),
+                text.offsetByCodePoints(0, p.getInt("end")),
+                List(lengths.length()) { lengths.getString(it) },
+            )
+        }
+    }
+
+    /** Fills the shorter voices of the passage at [offset] with rests, up to the longest. */
+    suspend fun padVoices(text: String, offset: Int): TextEdit = call(
+        text,
+        JSONObject().put("op", "pad_voices").put("pos", text.codePointCount(0, offset)),
+    )
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))

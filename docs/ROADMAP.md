@@ -223,6 +223,22 @@ This plan covers the pieces needed before the editor and the editor phases after
     up the next note), an instrumented test on the two-staff piano sample, and 2
     Python tests.
 
+- **0.15.0, voice lengths (E3):**
+  - `lilyedit.voice_lengths` finds every `<< … \\\\ … >>` (nested ones too) whose
+    voices aren't equally long, adding up each voice's durations. Passages with
+    tuplets, grace notes, repeats, nested `<<` or variables are skipped.
+  - LilyPond doesn't warn about this. A `<< >>` lasts as long as its longest voice,
+    so the music after it stays in time, but the shorter voice ends early and its
+    later notes no longer line up with the bars.
+  - `lilyedit.pad_voices` puts rests at the end of the shorter voices, and writes
+    out the duration of the item after the `>>` if it relied on the last one in the
+    passage.
+  - The Score tab checks 0.7 s after each change, and shows "⚠ Line N: voices of
+    unequal length" with "Go there" and "Fill with rests".
+  - Tests: 6 Python tests, plus an instrumented test that checks LilyPond's
+    engraving: the music after starts when the longest voice ends, and padding adds
+    the rest in voice 2.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 
