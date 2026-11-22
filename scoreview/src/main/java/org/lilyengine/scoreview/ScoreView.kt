@@ -172,8 +172,17 @@ fun ScoreView(
      * still scrolls.
      */
     onSelectRange: ((List<Grob>) -> Unit)? = null,
+    /**
+     * Note entry on the staff: when set, a tap on a staff line or space (not
+     * on an object) reports the place and its note, and the pen's hover shows
+     * a ghost note there.
+     */
+    onStaffTap: ((ScoreLookup.StaffPitch) -> Unit)? = null,
 ) {
     var hover by remember { mutableStateOf<Grob?>(null) }
+    /** Where a note would go, under the hovering pen, in note entry. */
+    var ghost by remember { mutableStateOf<Pair<Int, ScoreLookup.StaffPitch>?>(null) }
+    val currentOnStaffTap by rememberUpdatedState(onStaffTap)
     // Read inside the drag gesture, which mustn't restart when a long press selects a note.
     val currentSelection by rememberUpdatedState(selection)
     val currentOnTap by rememberUpdatedState(onTap)
@@ -228,7 +237,11 @@ fun ScoreView(
                         .pointerInput(lookup, page, wPt) {
                             detectTapGestures { off ->
                                 val k = wPt / size.width
-                                onTap(lookup?.objectAt(page, (off.x * k).toDouble(), (off.y * k).toDouble()))
+                                val x = (off.x * k).toDouble()
+                                val y = (off.y * k).toDouble()
+                                val g = lookup?.objectAt(page, x, y)
+                                val place = if (g == null) currentOnStaffTap?.let { lookup?.pitchAt(page, x, y) } else null
+                                if (place != null) currentOnStaffTap?.invoke(place) else currentOnTap(g)
                             }
                         }
                         .pointerInput(lookup, page, wPt, onDragSteps != null, onSelectRange != null) {
@@ -319,6 +332,13 @@ fun ScoreView(
                                             lookup?.objectAt(page, (c.position.x * k).toDouble(), (c.position.y * k).toDouble())
                                         }
                                     }
+                                    ghost = when {
+                                        e.type == PointerEventType.Exit || c.pressed || hover != null || currentOnStaffTap == null -> null
+                                        else -> {
+                                            val k = wPt / size.width
+                                            lookup?.pitchAt(page, (c.position.x * k).toDouble(), (c.position.y * k).toDouble())?.let { page to it }
+                                        }
+                                    }
                                 }
                             }
                         },
@@ -356,6 +376,27 @@ fun ScoreView(
                                     center = Offset(o.x + sz.width / 2, o.y + sz.height / 2),
                                     style = Stroke(width = 3.dp.toPx()),
                                 )
+                            }
+                            ghost?.takeIf { it.first == page }?.let { (_, p) ->
+                                // A note head where the note would go, with ledger lines off the staff.
+                                val half = p.halfSpacePt.toFloat() * px
+                                val cx = p.xPt.toFloat() * px
+                                val cy = p.yPt.toFloat() * px
+                                val color = Color(0xFF3F51B5)
+                                val top = (p.staff.linePositions?.maxOrNull() ?: 4.0).toInt()
+                                val bottom = (p.staff.linePositions?.minOrNull() ?: -4.0).toInt()
+                                val ledgers = when {
+                                    p.position > top + 1 -> (top + 2..p.position step 2)
+                                    p.position < bottom - 1 -> (p.position..bottom - 2).filter { (it - bottom) % 2 == 0 }
+                                    else -> emptyList()
+                                }
+                                for (l in ledgers) {
+                                    val ly = cy + (p.position - l) * half
+                                    drawLine(color, Offset(cx - 2.2f * half, ly), Offset(cx + 2.2f * half, ly), strokeWidth = 1.5.dp.toPx())
+                                }
+                                val sz = Size(2.6f * half, 2f * half)
+                                drawOval(color.copy(alpha = 0.45f), Offset(cx - sz.width / 2, cy - sz.height / 2), sz)
+                                drawOval(color, Offset(cx - sz.width / 2, cy - sz.height / 2), sz, style = Stroke(width = 1.5.dp.toPx()))
                             }
                             lasso?.takeIf { it.first == page }?.let { (_, rect) ->
                                 val o = Offset(rect.left * px, rect.top * px)

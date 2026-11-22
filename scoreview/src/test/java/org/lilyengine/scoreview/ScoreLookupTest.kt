@@ -1,6 +1,7 @@
 package org.lilyengine.scoreview
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -29,6 +30,24 @@ class ScoreLookupTest {
 
     private fun head(name: String, voice: String) =
         map.grobs.first { it.type == "NoteHead" && it.pitch?.name == name && it.voiceId == voice }
+
+    @Test
+    fun staffPlaceUnderEveryNoteHeadIsItsPitch() {
+        val heads = lookup.grobsOnPage(1).filter { it.type == "NoteHead" }
+        assertTrue(heads.size > 5)
+        for (h in heads) {
+            val (x, y) = centre(h)
+            val p = lookup.pitchAt(1, x, y)
+            assertNotNull("no staff at ${h.pitch?.name}", p)
+            assertEquals(h.pitch!!.name, h.staffPosition, p!!.position)
+            assertEquals(h.pitch!!.name, h.pitch!!.notename to h.pitch!!.octave, p.step to p.octave)
+            // One line or space higher is the next note up.
+            val up = lookup.pitchAt(1, x, y - p.halfSpacePt)!!
+            assertEquals((h.pitch!!.octave * 7 + h.pitch!!.notename + 1), up.octave * 7 + up.step)
+        }
+        // Far away from any staff: nothing.
+        assertNull(lookup.pitchAt(1, 1.0, 1.0))
+    }
 
     @Test
     fun tapOnANoteHeadFindsIt() {

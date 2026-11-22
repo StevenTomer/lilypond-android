@@ -172,7 +172,12 @@ class LilyTools(context: Context) {
     )
 
     /** The result of [insert]: the edit, and where the new item starts in the edited text. */
-    data class Inserted(val edit: TextEdit, val start: Int)
+    data class Inserted(
+        val edit: TextEdit,
+        val start: Int,
+        /** The MIDI keys inserted (for a note entered by staff position, with the key signature's accidental). */
+        val keys: List<Int> = emptyList(),
+    )
 
     /**
      * Note entry: inserts a note (one MIDI key in [keys], 60 = middle C), a
@@ -191,18 +196,35 @@ class LilyTools(context: Context) {
      */
     suspend fun insert(
         text: String, offset: Int, keys: List<Int>, duration: String? = null, after: Boolean = false, fill: Boolean = false,
+    ): Inserted = insert(text, offset, JSONObject().put("keys", org.json.JSONArray(keys)), duration, after, fill)
+
+    /**
+     * Like [insert], for a note given by its place on the staff: [step]
+     * 0 = c … 6 = b and [octave] (0 is the octave from middle C up), with
+     * the accidental the key signature there gives it.
+     */
+    suspend fun insertStep(
+        text: String, offset: Int, step: Int, octave: Int, duration: String? = null, after: Boolean = false, fill: Boolean = false,
+    ): Inserted = insert(
+        text, offset, JSONObject().put("steps", org.json.JSONArray(listOf(org.json.JSONArray(listOf(step, octave))))),
+        duration, after, fill,
+    )
+
+    private suspend fun insert(
+        text: String, offset: Int, what: JSONObject, duration: String?, after: Boolean, fill: Boolean,
     ): Inserted =
         withContext(dispatcher) {
             val request = JSONObject().put("op", "insert").put("text", text)
                 .put("pos", text.codePointCount(0, offset))
-                .put("keys", org.json.JSONArray(keys))
                 .put("after", after)
                 .put("fill", fill)
+            for (k in what.keys()) request.put(k, what.get(k))
             duration?.let { request.put("duration", it) }
             val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
             if (reply.has("error")) throw EditException(reply.getString("error"))
             val result = reply.getString("text")
-            Inserted(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")))
+            val keys = reply.optJSONArray("keys")?.let { a -> List(a.length()) { a.getInt(it) } }.orEmpty()
+            Inserted(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")), keys)
         }
 
     suspend fun relativeToAbsolute(text: String): TextEdit = call(text, JSONObject().put("op", "rel2abs"))

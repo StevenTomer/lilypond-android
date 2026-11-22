@@ -2,7 +2,9 @@ package org.lilyengine.scoreview
 
 import org.lilyengine.engine.ScoreMap
 import org.lilyengine.engine.ScoreMap.Grob
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Point-and-click in both directions, without any UI: from a point on a page
@@ -65,6 +67,64 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
             .map { it to distance(it, x, y) }
             .filter { it.second <= slop }
             .minByOrNull { it.second }?.first
+    }
+
+    /**
+     * A place on a staff: the line or space ([position], 0 = the middle line,
+     * up being positive) and the note there ([step] 0 = c … 6 = b, [octave]
+     * 0 = from middle C up), drawn at [yPt] on the page.
+     */
+    data class StaffPitch(val staff: Grob, val position: Int, val step: Int, val octave: Int, val xPt: Double, val yPt: Double) {
+        /** Half a staff space (one line or space), in points. */
+        var halfSpacePt: Double = 0.0
+            internal set
+        /** The note head whose pitch and place told the clef. */
+        var reference: Grob? = null
+            internal set
+    }
+
+    /**
+     * The staff line or space at a point on [page], up to [reach] staff
+     * spaces above or below a staff (ledger lines), and the note it stands
+     * for under the clef in effect there. The clef is read off the nearest
+     * note head on that staff in the same system, so null if there is none.
+     */
+    fun pitchAt(page: Int, xPt: Double, yPt: Double, reach: Double = 4.0): StaffPitch? {
+        val onPage = grobsOnPage(page)
+        val staff = onPage.filter { it.type == "StaffSymbol" }
+            .map { it to pageRect(it) }
+            .filter { (g, r) ->
+                val ss = (g.staffSpace ?: 1.0) * pointsPerStaffSpace
+                xPt >= r[0] && xPt <= r[2] && yPt >= r[1] - reach * ss && yPt <= r[3] + reach * ss
+            }
+            .minByOrNull { (_, r) -> abs(yPt - (r[1] + r[3]) / 2) } ?: return null
+        val (g, r) = staff
+        val half = (g.staffSpace ?: 1.0) * pointsPerStaffSpace / 2
+        val top = g.linePositions?.maxOrNull() ?: 4.0
+        // The top line is at the top of the box (lines are thin).
+        val position = ((r[1] - yPt) / half + top).roundToInt()
+        // A note head belongs to the staff that puts its staff position where it
+        // is drawn (not simply the nearest: a note on ledger lines between two
+        // staves can be nearer the other one).
+        val staves = onPage.filter { it.type == "StaffSymbol" }.map { it to pageRect(it) }
+        fun staffOf(h: Grob): Grob? {
+            val hr = pageRect(h)
+            val cx = (hr[0] + hr[2]) / 2
+            val cy = (hr[1] + hr[3]) / 2
+            val pos = h.staffPosition ?: return null
+            return staves.filter { (_, sr) -> cx >= sr[0] && cx <= sr[2] }
+                .minByOrNull { (st, sr) ->
+                    val h2 = (st.staffSpace ?: 1.0) * pointsPerStaffSpace / 2
+                    abs(sr[1] + ((st.linePositions?.maxOrNull() ?: 4.0) - pos) * h2 - cy)
+                }?.first
+        }
+        val head = onPage.filter { h ->
+            h.type == "NoteHead" && h.pitch != null && h.staffPosition != null && staffOf(h) === g
+        }.minByOrNull { h -> pageRect(h).let { hr -> abs((hr[0] + hr[2]) / 2 - xPt) } } ?: return null
+        val p = head.pitch!!
+        val diatonic = p.octave * 7 + p.notename + (position - head.staffPosition!!)
+        return StaffPitch(g, position, Math.floorMod(diatonic, 7), Math.floorDiv(diatonic, 7), xPt, r[1] + (top - position) * half)
+            .also { it.halfSpacePt = half; it.reference = head }
     }
 
     /** All printed objects made by the same piece of source (a note's head, accidental, dots). */

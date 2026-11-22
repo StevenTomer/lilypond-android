@@ -161,12 +161,12 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var entryDot by remember { mutableStateOf(false) }
     /** New notes take the place of rests after the selected note (as in a voice just added). */
     var fillRests by remember { mutableStateOf(true) }
-    /** Notes and chords waiting to be entered (MIDI keys; empty for a rest), in playing order. */
-    val entries = remember { Channel<List<Int>>(Channel.UNLIMITED) }
+    /** Notes, chords and rests waiting to be entered, in playing order. */
+    val entries = remember { Channel<Entry>(Channel.UNLIMITED) }
     val connectedKeyboard by keyboard.connected.collectAsState()
     DisposableEffect(keyboard, entering) {
         if (!entering) return@DisposableEffect onDispose { }
-        val chords = ChordCollector { keys -> entries.trySend(keys) }
+        val chords = ChordCollector { keys -> entries.trySend(Entry.Keys(keys)) }
         val listener: (MidiKeyboard.Event) -> Unit = { e ->
             when (e) {
                 is MidiKeyboard.Event.NoteOn -> chords.noteOn(e.key)
@@ -437,7 +437,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
 
     // Enters queued notes one at a time, each after the one before.
     LaunchedEffect(Unit) {
-        for (keys in entries) {
+        for (entry in entries) {
             snapshotFlow { busy }.first { !it }
             busy = true
             try {
@@ -445,7 +445,11 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 val selected = selectedOffset?.takeIf { it < before.length }
                 val at = selected ?: text.selection.start
                 val duration = entryDuration + if (entryDot) "." else ""
-                val r = tools.insert(before, at, keys, duration, after = selected != null, fill = fillRests)
+                val r = when (entry) {
+                    is Entry.Keys -> tools.insert(before, at, entry.keys, duration, after = selected != null, fill = fillRests)
+                    is Entry.Step -> tools.insertStep(before, at, entry.step, entry.octave, duration, after = selected != null, fill = fillRests)
+                        .also { keyboard.play(it.keys, 300) } // the note tapped on the staff, as entered
+                }
                 undo.addLast(before)
                 val after = r.edit.applyTo(before)
                 selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
@@ -570,7 +574,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     canUndo = undo.isNotEmpty(),
                     onDuration = { entryDuration = it },
                     onDot = { entryDot = !entryDot },
-                    onRest = { entries.trySend(emptyList()) },
+                    onRest = { entries.trySend(Entry.Keys(emptyList())) },
                     fillRests = fillRests,
                     onFillRests = { fillRests = !fillRests },
                     onUndo = ::undoLast,
@@ -632,6 +636,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 ScoreView(
                     document, lookup, if (playback != null) cursor else selection, ::onTap,
                     onSelectRange = ::onSelectRange,
+                    onStaffTap = if (entering) { p -> entries.trySend(Entry.Step(p.step, p.octave)) } else null,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
                     state = viewState,
                     onDragSteps = { g, steps ->
@@ -677,6 +682,13 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             }
         }
     }
+}
+
+/** Something to enter: notes played or tapped on the piano (MIDI keys; none for a rest), or a place tapped on the staff. */
+private sealed interface Entry {
+    data class Keys(val keys: List<Int>) : Entry
+    /** [step] 0 = c … 6 = b, [octave] 0 = from middle C up; the key signature gives the accidental. */
+    data class Step(val step: Int, val octave: Int) : Entry
 }
 
 /** Where playback sounds. */
@@ -810,7 +822,8 @@ private fun EntryBar(
             OutlinedButton(onClick = onUndo, enabled = canUndo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Undo") }
             Text(
                 (if (hasPlace) "After the selected note. " else "At the cursor. ") +
-                    (keyboardName?.let { "Play on $it, or tap the piano." } ?: "Tap the piano, or plug in a MIDI keyboard."),
+                    (keyboardName?.let { "Play on $it, tap the piano, or tap a line or space on the staff." }
+                        ?: "Tap the piano or a line or space on the staff, or plug in a MIDI keyboard."),
                 fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(horizontal = 6.dp),
             )
         }
@@ -1023,7 +1036,7 @@ private const val WHOLE_SCORE_TIMEOUT_S = 1800L
 private val LONG_SAMPLE = pianoPiece(400)
 
 /** Piano music with two voices in the right hand, and a chord, over a few systems. */
-private val SCORE_SAMPLE = """
+internal val SCORE_SAMPLE = """
 \version "2.26.0"
 \header { title = "Point and click" }
 upper = \relative c'' {

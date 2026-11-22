@@ -64,5 +64,28 @@ class ScoreViewTest {
         assertTrue(head in lookup.objectsAtSource(line, char, "score.ly"))
     }
 
+    @Test
+    fun staffPlacesOnAPianoScore() = runBlocking {
+        // Treble and bass staves close together: each place must be read with its own clef.
+        val r = engine.render(SCORE_SAMPLE)
+        assertTrue(r.log, r.success)
+        val lookup = ScoreLookup(r.scoreMap!!)
+        val heads = lookup.grobsOnPage(1).filter { it.type == "NoteHead" }
+        assertTrue(heads.size > 40)
+        for (h in heads) {
+            val (l, t, rt, b) = lookup.pageRect(h).toList()
+            val x = ((l + rt) / 2).toDouble()
+            val y = ((t + b) / 2).toDouble()
+            val p = lookup.pitchAt(1, x, y)
+            assertNotNull("no staff place at ${h.pitch?.name}", p)
+            assertEquals(
+                "at ${h.pitch?.name} (position ${h.staffPosition}): read with the clef of ${p!!.reference?.pitch?.name}",
+                h.pitch!!.notename to h.pitch!!.octave, p.step to p.octave,
+            )
+            assertEquals(y, p.yPt, p.halfSpacePt / 2) // drawn where the note head is
+        }
+        assertEquals(2, lookup.grobsOnPage(1).count { it.type == "StaffSymbol" })
+    }
+
     private fun <T> assertNotNullAndGet(v: T?): T { assertNotNull(v); return v!! }
 }

@@ -397,5 +397,21 @@ class Voices(unittest.TestCase):
             e.remove_voice(self.SRC, self.SRC.index("a1"))
 
 
+
+class StaffSteps(unittest.TestCase):
+    def test_key_signature_gives_the_accidental(self):
+        src = "\\relative c'' { \\key g \\major g4 a b c }"
+        self.assertEqual(e.keys_for_steps(src, src.index("c }"), [(3, 1), (3, 0), (0, 0)]), [78, 66, 60])
+        src = "{ \\key f \\major c'4 }"
+        self.assertEqual(e.keys_for_steps(src, len(src) - 1, [(6, 0)]), [70])  # b flat
+
+    def test_insert_by_step(self):
+        src = "\\relative c'' { \\key g \\major g4 a b c }"
+        reply = json.loads(e.call(json.dumps({"op": "insert", "text": src, "pos": src.index("c }"),
+                                              "steps": [[3, 1]], "after": True})))
+        self.assertEqual(reply["text"], "\\relative c'' { \\key g \\major g4 a b c fis }")
+        self.assertEqual(reply["keys"], [78])
+
+
 if __name__ == "__main__":
     unittest.main()

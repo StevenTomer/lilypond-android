@@ -59,8 +59,7 @@ This plan covers the pieces needed before the editor and the editor phases after
   - The harness **Score** tab: editable source, auto-render 0.6 s after typing stops
     (a newer edit cancels the running render), tap a note to select its source, move the
     cursor to highlight the note, Play for MIDI, and Go to error.
-  - Still to do: the hover ghost note (the pitch under the
-    pen), tiled rendering for deep zoom (pages are drawn sharp up to 2.5x, then scaled).
+  - Still to do: tiled rendering for deep zoom (pages are drawn sharp up to 2.5x, then scaled).
 - **M1 fast edit view, done (differently than planned):** `Options.window` engraves only a
   stretch of the music. The settings file `window.ly` wraps each score the way LilyPond's
   own `showFirstLength` does: the music is cut off at the window's end, and typesetting is
@@ -207,6 +206,22 @@ This plan covers the pieces needed before the editor and the editor phases after
     entry. "Remove voice" works on a note in a `\\\\` passage.
   - Tests: 9 Python tests, plus an instrumented test: add a voice, fill it from the
     keyboard path, check both voices in LilyPond's engraving, then remove each voice.
+
+- **0.14.0, note entry on the staff (E3):**
+  - `ScoreLookup.pitchAt` turns a point into a staff line or space. The staff comes
+    from the StaffSymbol boxes, and ledger lines are reached up to 4 staff spaces
+    beyond the staff. The note comes from the clef in effect, read off the nearest
+    note head on that staff in the same system.
+  - A note head belongs to the staff that puts its staff position where it is
+    drawn, not simply the nearest staff: a treble note on ledger lines between the
+    staves is nearer the bass staff.
+  - In Enter notes mode, `ScoreView.onStaffTap` lets a tap on a line or space enter
+    that note. The key signature gives its accidental (`lilyedit.keys_for_steps`, and
+    `LilyTools.insertStep`), and it sounds on a connected keyboard. The pen's hover
+    shows a ghost note there, with ledger lines.
+  - Tests: a unit test (every note head's centre gives its own pitch, and one step
+    up the next note), an instrumented test on the two-staff piano sample, and 2
+    Python tests.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

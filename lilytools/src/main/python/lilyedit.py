@@ -882,6 +882,14 @@ def remove_voice(text, pos):
     return _fix_octaves(text, desired)
 
 
+def keys_for_steps(text, pos, steps):
+    """MIDI keys for notes given as (note 0-6, octave; 0 is the octave from
+    middle C up) on a staff, with the accidental the key signature at `pos`
+    gives them: a tap on the F line in G major is F sharp."""
+    key = key_at(text, pos)
+    return [60 + 12 * octave + _NATURAL[n] + int(scale_alter(key, n) * 2) for n, octave in steps]
+
+
 def fill(text, pos, keys, duration):
     """Note entry over rests: the note, chord or rest (empty `keys`) takes
     the place of the rest at `pos`, or of the rest right after the item at
@@ -939,6 +947,8 @@ def call(request_json):
         elif op == "transpose":
             out = transpose(text, req.get("start", 0), req.get("end", -1), req["from"], req["to"])
         elif op == "insert":
+            if "steps" in req:
+                req["keys"] = keys_for_steps(text, req["pos"], req["steps"])
             filled = None
             if req.get("fill") and req.get("after") and req.get("duration"):
                 filled = fill(text, req["pos"], req.get("keys", []), req["duration"])
@@ -947,7 +957,7 @@ def call(request_json):
             else:
                 out, start = insert(text, req["pos"], req.get("keys", []), req.get("duration"),
                                     req.get("after", False))
-            return json.dumps({"text": out, "start": start})
+            return json.dumps({"text": out, "start": start, "keys": req.get("keys", [])})
         elif op == "toggle":
             out = toggle(text, req["pos"], req["what"])
         elif op == "multi":
