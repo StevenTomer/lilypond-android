@@ -189,12 +189,13 @@ jobs:
         with:
           name: native-out
           path: native/out
-      # Build the test APKs before booting the emulator, retrying once: Maven
+      # Build the test APKs before booting the emulator, retrying once (without
+      # Gradle's cached "not found" answers): Maven
       # downloads occasionally fail transiently on the runners.
       - name: Build test APKs
         run: |
           ./gradlew :harness:assembleDebug :harness:assembleDebugAndroidTest -Plilyengine.abis=x86_64 \
-            || { sleep 30; ./gradlew :harness:assembleDebug :harness:assembleDebugAndroidTest -Plilyengine.abis=x86_64; }
+            || { sleep 30; ./gradlew --refresh-dependencies :harness:assembleDebug :harness:assembleDebugAndroidTest -Plilyengine.abis=x86_64; }
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
