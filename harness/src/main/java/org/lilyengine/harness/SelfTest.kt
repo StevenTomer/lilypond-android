@@ -107,6 +107,18 @@ class SelfTest(private val engine: LilyPondEngine, private val tools: LilyTools)
             require(out.contains("{ a,2 g }")) { out }
             "\"c,2 g'\" became \"${e.replacement}\" (Python ready after $startup ms)"
         }
+        check("MIDI import with midi2ly (embedded Python)") {
+            val r = engine.render(POLY_SAMPLE)
+            requireOk(r)
+            val midi = r.midi.singleOrNull() ?: error("No MIDI file was written")
+            val start = System.nanoTime()
+            val imported = tools.importMidi(midi)
+            val ms = (System.nanoTime() - start) / 1_000_000
+            require(imported.text.contains("\\version \"2.26.0\"")) { imported.text.take(500) }
+            val back = engine.render(imported.text)
+            require(back.success) { back.log.takeLast(1500) }
+            "imported and converted in $ms ms; renders again (${imported.text.lines().size} lines)"
+        }
         return results
     }
 
