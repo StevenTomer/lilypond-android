@@ -61,11 +61,11 @@ class SelfTest(private val engine: LilyPondEngine) {
             val warnings = r.diagnostics.count { it.severity == Diagnostic.Severity.WARNING }
             "$warnings warning(s), ${r.elapsedMillis} ms"
         }
-        check("Error reported at the right line") {
+        check("Finds a deliberate mistake (extra '}' on line 2)") {
             val r = engine.render("\\version \"2.26.0\"\n{ c'4 d'4 }}\n")
             val err = r.diagnostics.firstOrNull { it.severity == Diagnostic.Severity.ERROR }
             require(err != null && err.line == 2) { "Expected an error on line 2.\n${r.log}" }
-            "line ${err.line}, column ${err.column}: ${err.message}"
+            "LilyPond reported, as expected: line ${err.line}, column ${err.column}: ${err.message}"
         }
         return results
     }
