@@ -87,6 +87,30 @@ def midi_to_ly(midi_path, duration_quant=None, start_quant=None, key=None,
             return f.read(), log
 
 
+def musicxml_to_ly(path, absolute=False, keep_layout=False):
+    """Converts a MusicXML file (.musicxml / .xml, or compressed .mxl) to
+    LilyPond text with musicxml2ly. Returns (text, log).
+
+    absolute: absolute pitches instead of \\relative; keep_layout: keep the
+    file's page size, margins and system and page breaks (made for another
+    page than the tablet's, so dropped by default)."""
+    with open(path, "rb") as f:
+        compressed = f.read(2) == b"PK"  # a zip: .mxl
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.ly")
+        argv = ["musicxml2ly", "--output", out, "--absolute" if absolute else "--relative"]
+        if compressed:
+            argv.append("--compressed")
+        if not keep_layout:
+            argv += ["--no-page-layout", "--no-system-breaks", "--no-page-breaks"]
+        argv.append(path)
+        ok, log = _run("musicxml2ly", argv)
+        if not ok or not os.path.exists(out):
+            raise RuntimeError("musicxml2ly failed: " + log)
+        with open(out, encoding="utf-8") as f:
+            return f.read(), log
+
+
 def convert_ly(text, to_version=None):
     """Updates LilyPond input to the current (or given) syntax with
     convert-ly. Returns (text, log)."""
@@ -111,6 +135,8 @@ def call(request_json):
     try:
         if op == "midi2ly":
             text, log = midi_to_ly(req.pop("path"), **req)
+        elif op == "musicxml2ly":
+            text, log = musicxml_to_ly(req.pop("path"), **req)
         elif op == "convert_ly":
             text, log = convert_ly(req["text"], req.get("to"))
         else:

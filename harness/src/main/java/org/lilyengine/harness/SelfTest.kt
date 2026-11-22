@@ -10,7 +10,7 @@ import org.lilyengine.lilytools.LilyTools
  * On-device checks that need no adb: the same things the instrumented tests
  * check, plus a few more, with a plain-text report that can be shared.
  */
-class SelfTest(private val engine: LilyPondEngine, private val tools: LilyTools) {
+class SelfTest(private val context: android.content.Context, private val engine: LilyPondEngine, private val tools: LilyTools) {
     data class Check(val name: String, val passed: Boolean, val millis: Long, val detail: String)
 
     suspend fun run(onProgress: (List<Check>) -> Unit): List<Check> {
@@ -130,6 +130,18 @@ class SelfTest(private val engine: LilyPondEngine, private val tools: LilyTools)
             val back = engine.render(imported.text)
             require(back.success) { back.log.takeLast(1500) }
             "imported and converted in $ms ms; renders again (${imported.text.lines().size} lines)"
+        }
+        check("MusicXML import with musicxml2ly (embedded Python)") {
+            val file = java.io.File(context.cacheDir, "selftest.musicxml")
+            context.assets.open(MUSICXML_SAMPLE_ASSET).use { i -> file.outputStream().use { i.copyTo(it) } }
+            val start = System.nanoTime()
+            val imported = tools.importMusicXml(file)
+            val ms = (System.nanoTime() - start) / 1_000_000
+            val r = engine.render(imported.text)
+            requireOk(r)
+            val voices = r.scoreMap!!.grobs.filter { it.type == "NoteHead" }.mapNotNull { it.voiceId }.toSet()
+            require(voices.size == 3) { "voices: $voices" }
+            "imported in $ms ms; two voices on one staff and a second part, as in the file"
         }
         return results
     }

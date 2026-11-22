@@ -294,12 +294,22 @@ def _item_end(text, it):
     """The end of an item with what is attached to it (articulations,
     dynamics, slurs, ties): up to the next space."""
     end = it.end
-    while end < len(text) and not text[end].isspace() and text[end] not in "}|":
-        # A '>' ends a chord, unless it is an accent (->) or a decrescendo (\\>).
-        if text[end] == ">" and text[end - 1] not in "-^_\\":
-            break
-        end += 1
-    return end
+    while True:
+        while end < len(text) and not text[end].isspace() and text[end] not in "}|":
+            # A '>' ends a chord, unless it is an accent (->) or a decrescendo (\\>).
+            if text[end] == ">" and text[end - 1] not in "-^_\\":
+                break
+            end += 1
+        # Marks written after a space still belong to the note: "b4 -." (as
+        # musicxml2ly writes them). A direction (- ^ _) followed by something
+        # starts one.
+        j = end
+        while j < len(text) and text[j] in " \t":
+            j += 1
+        if j + 1 < len(text) and text[j] in "-^_" and not text[j + 1].isspace() and j > end:
+            end = j
+            continue
+        return end
 
 
 def _item_start(text, it):
@@ -470,6 +480,8 @@ def toggle(text, pos, what):
     attached = text[start:end]
     for s_, e_, _, _ in sorted(remove, reverse=True):
         attached = attached[:s_] + attached[e_:]
+    if remove:  # marks written after spaces leave spaces behind
+        attached = re.sub(r"[ \t]+", " ", attached).rstrip(" \t")
     if add:
         attached += add
     return text[:start] + attached + text[end:]

@@ -241,6 +241,12 @@ class Marks(unittest.TestCase):
         self.assertEqual(e.marks(src, 2), ["accent", "decresc"])
         self.assertEqual(e.delete(src, 2), "{ d' }")
 
+    def test_marks_after_a_space_belong_to_the_note(self):
+        src = "{ b'4 -. c''4 }"  # as musicxml2ly writes them
+        self.assertEqual(e.marks(src, 2), ["staccato"])
+        self.assertEqual(e.toggle(src, 2, "staccato"), "{ b'4 c''4 }")
+        self.assertEqual(e.delete(src, 2), "{ c''4 }")
+
     def test_marks_go_on_the_chord(self):
         src = "{ <c' e' g'>2 r }"
         out = e.toggle(src, src.index("e'"), "fermata")

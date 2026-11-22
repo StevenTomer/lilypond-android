@@ -297,6 +297,31 @@ class LilyTools(context: Context) {
             Imported(converted.text, first.log + "\n" + converted.log)
         }
 
+    /** How musicxml2ly reads a MusicXML file. */
+    data class MusicXmlImportOptions(
+        /** Absolute pitches instead of \relative. */
+        val absolute: Boolean = false,
+        /** Keep the file's page size, margins and line and page breaks (made for some other page). */
+        val keepLayout: Boolean = false,
+    )
+
+    /**
+     * Converts a MusicXML file (.musicxml, .xml, or compressed .mxl, as
+     * MuseScore, Finale, Sibelius or Dorico export) to LilyPond with
+     * LilyPond's own musicxml2ly, then updates it to the current syntax.
+     * Voices stay voices, and parts become staves.
+     */
+    suspend fun importMusicXml(file: java.io.File, options: MusicXmlImportOptions = MusicXmlImportOptions()): Imported =
+        withContext(dispatcher) {
+            lilyedit() // starts Python if needed
+            val first = importCall(
+                JSONObject().put("op", "musicxml2ly").put("path", file.absolutePath)
+                    .put("absolute", options.absolute).put("keep_layout", options.keepLayout),
+            )
+            val converted = importCall(JSONObject().put("op", "convert_ly").put("text", first.text))
+            Imported(converted.text, first.log + "\n" + converted.log)
+        }
+
     private fun importCall(request: JSONObject): Imported {
         val module = Python.getInstance().getModule("lilyimport")
         val reply = JSONObject(module.callAttr("call", request.toString()).toString())

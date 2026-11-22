@@ -149,6 +149,39 @@ class LilyToolsTest {
     }
 
     @Test
+    fun musicXmlImportKeepsTwoVoicesOnAStaff() = runBlocking {
+        val xml = context.assets.open(MUSICXML_SAMPLE_ASSET).use { it.readBytes() }
+        val plain = java.io.File(context.cacheDir, "t.musicxml").apply { writeBytes(xml) }
+        // The same score compressed, as .mxl files are: a zip with a container.
+        val mxl = java.io.File(context.cacheDir, "t.mxl")
+        java.util.zip.ZipOutputStream(mxl.outputStream()).use { z ->
+            z.putNextEntry(java.util.zip.ZipEntry("META-INF/container.xml"))
+            z.write(
+                """<?xml version="1.0" encoding="UTF-8"?><container><rootfiles>""".toByteArray() +
+                    """<rootfile full-path="score.musicxml"/></rootfiles></container>""".toByteArray(),
+            )
+            z.putNextEntry(java.util.zip.ZipEntry("score.musicxml"))
+            z.write(xml)
+        }
+        for (file in listOf(plain, mxl)) {
+            val imported = tools.importMusicXml(file)
+            val r = engine.render(imported.text)
+            assertTrue(r.log, r.success)
+            val grobs = r.scoreMap!!.grobs
+            val byVoice = grobs.filter { it.type == "NoteHead" }.groupBy { it.voiceId }
+                .mapValues { (_, g) -> g.sortedWith(compareBy({ it.momentValue }, { it.pitch!!.octave * 7 + it.pitch!!.notename })).map { it.pitch!!.name } }
+            // Two voices on the upper staff, and the lower part on a staff of its own.
+            assertEquals(imported.text, listOf("b'", "c''", "d''", "e''", "g'", "b'"), byVoice["PartPOneVoiceOne"])
+            assertEquals(listOf("g'", "fis'"), byVoice["PartPOneVoiceTwo"])
+            assertEquals(listOf("g,", "g,"), byVoice["PartPTwoVoiceOne"])
+            assertEquals(2, grobs.count { it.type == "StaffSymbol" })
+            assertEquals(1, grobs.count { it.type == "Script" }) // the staccato
+            // musicxml2ly writes marks after a space ("b4 -."): still the note's.
+            assertEquals(setOf("staccato"), tools.marks(imported.text, imported.text.indexOf("b4")))
+        }
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

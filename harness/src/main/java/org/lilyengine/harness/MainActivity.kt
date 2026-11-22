@@ -131,7 +131,7 @@ private fun Harness(engine: LilyPondEngine) {
                 page = null
                 scope.launch {
                     log = "Running self-test…"
-                    val checks = SelfTest(engine, tools).run { partial ->
+                    val checks = SelfTest(context, engine, tools).run { partial ->
                         log = SelfTest.report(partial) + "\nRunning…"
                     }
                     report = SelfTest.report(checks)

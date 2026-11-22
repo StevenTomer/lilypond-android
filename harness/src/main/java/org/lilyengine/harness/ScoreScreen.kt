@@ -147,12 +147,22 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var longSample by remember { mutableStateOf(false) }
     /** A MIDI file picked for import, waiting for the options dialog. */
     var midiToImport by remember { mutableStateOf<java.io.File?>(null) }
-    val pickMidi = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    /** A MusicXML file picked for import, waiting for the options dialog. */
+    var musicXmlToImport by remember { mutableStateOf<java.io.File?>(null) }
+    val pickImport = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val f = java.io.File(context.cacheDir, "import.mid")
         runCatching {
-            context.contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
-            midiToImport = f
+            val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+            // Told apart by their first bytes, as file names and types are often wrong.
+            when {
+                bytes.size >= 4 && String(bytes, 0, 4, Charsets.ISO_8859_1) == "MThd" ->
+                    midiToImport = java.io.File(context.cacheDir, "import.mid").apply { writeBytes(bytes) }
+                bytes.size >= 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte() ->
+                    musicXmlToImport = java.io.File(context.cacheDir, "import.mxl").apply { writeBytes(bytes) }
+                String(bytes, 0, minOf(bytes.size, 4096), Charsets.UTF_8).let { "<score-partwise" in it || "<score-timewise" in it } ->
+                    musicXmlToImport = java.io.File(context.cacheDir, "import.musicxml").apply { writeBytes(bytes) }
+                else -> status = "That isn't a MIDI or MusicXML file."
+            }
         }.onFailure { status = "Can't read that file: ${it.message}" }
     }
     /** Note entry: notes played or tapped go in after the selected note. */
@@ -520,6 +530,29 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         )
     }
 
+    musicXmlToImport?.let { file ->
+        MusicXmlImportDialog(
+            onDismiss = { musicXmlToImport = null },
+            onImport = { options ->
+                musicXmlToImport = null
+                status = "Importing MusicXML…"
+                scope.launch {
+                    try {
+                        val imported = tools.importMusicXml(file, options)
+                        undo.addLast(text.text)
+                        selectedOffset = null
+                        selection = emptyList()
+                        range = emptyList()
+                        pendingImport.value = imported.text
+                        text = TextFieldValue(imported.text)
+                    } catch (e: LilyTools.EditException) {
+                        status = "MusicXML import failed: ${e.message}"
+                    }
+                }
+            },
+        )
+    }
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
         val piano: @Composable () -> Unit = {
@@ -535,8 +568,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     if (entering) Button(onClick = { entering = false }) { Text("✓ Enter notes") }
                     else TextButton(onClick = { entering = true }) { Text("Enter notes") }
                     TextButton(onClick = {
-                        pickMidi.launch(arrayOf("audio/midi", "audio/x-midi", "audio/sp-midi", "application/octet-stream"))
-                    }) { Text("Import MIDI") }
+                        pickImport.launch(IMPORT_TYPES)
+                    }) { Text("Import") }
                     TextButton(onClick = {
                         undo.clear(); selectedOffset = null; selection = emptyList()
                         longSample = !longSample
@@ -769,6 +802,38 @@ private class Playback private constructor(
         }
     }
 }
+
+/** Options for musicxml2ly. */
+@Composable
+private fun MusicXmlImportDialog(onDismiss: () -> Unit, onImport: (LilyTools.MusicXmlImportOptions) -> Unit) {
+    var absolute by remember { mutableStateOf(false) }
+    var keepLayout by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import MusicXML") },
+        text = {
+            Column {
+                Row(Modifier.fillMaxWidth().clickable { absolute = !absolute }, verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = absolute, onCheckedChange = { absolute = it })
+                    Text("Absolute pitches (not \\relative)")
+                }
+                Row(Modifier.fillMaxWidth().clickable { keepLayout = !keepLayout }, verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = keepLayout, onCheckedChange = { keepLayout = it })
+                    Text("Keep the file's page size and line breaks")
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onImport(LilyTools.MusicXmlImportOptions(absolute, keepLayout)) }) { Text("Import") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** What Import offers in the file picker: MIDI and MusicXML (some apps label files loosely). */
+private val IMPORT_TYPES = arrayOf(
+    "audio/midi", "audio/x-midi", "audio/sp-midi",
+    "application/vnd.recordare.musicxml+xml", "application/vnd.recordare.musicxml",
+    "application/xml", "text/xml", "application/zip", "application/octet-stream",
+)
 
 /** Options for midi2ly: how finely to quantise, and whether triplets are allowed. */
 @Composable

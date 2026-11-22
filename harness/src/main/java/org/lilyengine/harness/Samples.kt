@@ -18,3 +18,6 @@ internal val HEAVY_SAMPLE = """
   \new Staff \relative c { \clef bass \repeat unfold 400 { <c e g>2 } }
 >>
 """.trimStart()
+
+/** A MusicXML score in the app's assets: two voices on one staff, a chord, a staccato, and a second part. */
+internal const val MUSICXML_SAMPLE_ASSET = "samples/two-voices.musicxml"

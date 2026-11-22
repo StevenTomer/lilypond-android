@@ -239,6 +239,23 @@ This plan covers the pieces needed before the editor and the editor phases after
     engraving: the music after starts when the longest voice ends, and padding adds
     the rest in voice 2.
 
+- **0.16.0, MusicXML import:**
+  - `lilyimport.musicxml_to_ly` runs LilyPond's own musicxml2ly in-process, then
+    convert-ly. It takes plain `.musicxml` / `.xml` and compressed `.mxl` (detected by
+    the zip's first bytes).
+  - By default the file's page size, margins and breaks are dropped, since they were
+    made for another page; the import dialog can keep them, and offers absolute
+    pitches. Voices stay voices (named Voice contexts), and parts become staves.
+  - The Score tab's Import tells MIDI from MusicXML by the file's first bytes, not
+    its name or type.
+  - Marks written after a space (`b4 -.`, as musicxml2ly writes them) now belong to
+    the note: `_item_end` reaches them, so the marks row sees them and delete
+    removes them.
+  - Tests: an instrumented test imports the sample, plain and as a `.mxl`, and checks
+    from LilyPond's engraving: both voices on the upper staff, the lower part on its
+    own staff, and the staccato. A 14th self-test check uses the same sample
+    (`assets/samples/two-voices.musicxml`). There is also 1 Python test.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 
