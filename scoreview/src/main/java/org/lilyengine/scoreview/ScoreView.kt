@@ -30,6 +30,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -62,6 +64,9 @@ class ScoreViewState {
     /** Horizontal pan in pixels (0 or negative), for zoomed-in pages. */
     var offsetX by mutableFloatStateOf(0f)
         private set
+
+    /** Set while a note is being dragged: one-finger panning stops. */
+    internal var noteDrag = false
 
     /** The zoom pages are drawn sharp for; follows [scale] once a pinch ends. */
     internal var renderScale by mutableFloatStateOf(1f)
@@ -153,13 +158,14 @@ fun ScoreView(
     modifier: Modifier = Modifier,
     state: ScoreViewState = rememberScoreViewState(),
     /**
-     * Called when a selected note head is dragged up or down with a pen and
-     * released: the number of staff positions (lines and spaces) it moved,
-     * up being positive.
+     * Called when a selected note head is dragged up or down and released:
+     * the number of staff positions (lines and spaces) it moved, up being
+     * positive. A pen drags at once; a finger after a long press.
      */
     onDragSteps: ((Grob, Int) -> Unit)? = null,
 ) {
     var hover by remember { mutableStateOf<Grob?>(null) }
+    val haptics = LocalHapticFeedback.current
     /** A note head being dragged with the pen, and by how many staff positions. */
     var drag by remember { mutableStateOf<Pair<Grob, Int>?>(null) }
     val voices = remember(lookup) {
@@ -212,28 +218,48 @@ fun ScoreView(
                         .pointerInput(lookup, page, wPt, selection, onDragSteps) {
                             if (lookup == null || onDragSteps == null) return@pointerInput
                             awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                if (down.type != PointerType.Stylus) return@awaitEachGesture
+                                // The Initial pass reaches this page before the list sees the
+                                // event, so a drag claimed here never scrolls or pans.
+                                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                                 val k = wPt / size.width
                                 val g = lookup.objectAt(page, (down.position.x * k).toDouble(), (down.position.y * k).toDouble())
                                     ?.takeIf { it.type == "NoteHead" && it in selection } ?: return@awaitEachGesture
+                                val pen = down.type == PointerType.Stylus || down.type == PointerType.Eraser
+                                if (!pen) {
+                                    // A finger has to hold still on the note first (long press);
+                                    // otherwise it's a tap or a scroll as usual.
+                                    val aborted = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                        while (true) {
+                                            val c = awaitPointerEvent(PointerEventPass.Initial).changes
+                                                .firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull true
+                                            if (!c.pressed || (c.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                                                return@withTimeoutOrNull true
+                                            }
+                                        }
+                                        @Suppress("UNREACHABLE_CODE") false
+                                    }
+                                    if (aborted == true) return@awaitEachGesture
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
+                                state.noteDrag = true
+                                down.consume()
                                 // Half a staff space (one line or space) in pixels.
                                 val stepPx = ((g.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2 / k).toFloat()
-                                var dragging = false
-                                while (true) {
-                                    val e = awaitPointerEvent()
-                                    val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                                    val dy = c.position.y - down.position.y
-                                    if (!dragging && kotlin.math.abs(dy) > viewConfiguration.touchSlop) dragging = true
-                                    if (dragging) {
-                                        c.consume() // no scrolling, and not a tap
-                                        drag = g to -(dy / stepPx).roundToInt()
+                                drag = g to 0
+                                try {
+                                    while (true) {
+                                        val c = awaitPointerEvent(PointerEventPass.Initial).changes
+                                            .firstOrNull { it.id == down.id } ?: break
+                                        c.consume() // not a scroll, pan or tap
+                                        drag = g to -((c.position.y - down.position.y) / stepPx).roundToInt()
+                                        if (!c.pressed) break
                                     }
-                                    if (!c.pressed) break
+                                    val steps = drag?.second ?: 0
+                                    if (steps != 0) onDragSteps(g, steps)
+                                } finally {
+                                    drag = null
+                                    state.noteDrag = false
                                 }
-                                val result = drag
-                                drag = null
-                                if (dragging && result != null && result.second != 0) onDragSteps(result.first, result.second)
                             }
                         }
                         .pointerInput(lookup, page, wPt) {
@@ -308,7 +334,7 @@ private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.pinchAnd
                 val zoom = event.calculateZoom()
                 if (zoom != 1f) state.zoomBy(zoom, event.calculateCentroid())
                 event.changes.forEach { it.consume() }
-            } else if (down.size == 1 && state.scale > 1.01f) {
+            } else if (down.size == 1 && state.scale > 1.01f && !state.noteDrag) {
                 val c = down[0]
                 state.panX(c.position.x - c.previousPosition.x)
             }
