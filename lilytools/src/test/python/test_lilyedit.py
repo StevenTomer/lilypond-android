@@ -276,5 +276,71 @@ class Marks(unittest.TestCase):
         self.assertEqual(reply["marks"], ["staccato", "slur-start"])
 
 
+
+class Ranges(unittest.TestCase):
+    SRC = "\\relative c'' { << { c4 e g e } \\\\ { c,2 g' } >> | <g b d>2 r4 fis8 g | }"
+
+    def at(self, *tokens):
+        return [self.SRC.index(t) for t in tokens]
+
+    def test_step_keeps_the_other_voice_and_finds_the_notes_again(self):
+        out, pos = e.multi(self.SRC, self.at("c4", "e g", "g e", "e }"), "step", 1)
+        self.assertEqual(out, "\\relative c'' { << { d4 f a f } \\\\ { c,2 g' } >> | <g b d>2 r4 fis8 g | }")
+        self.assertEqual([out[p] for p in pos], ["d", "f", "a", "f"])
+        # voice 2 and the bar after sound as before
+        self.assertEqual(absolute(out)[-7:], absolute(self.SRC)[-7:])
+
+    def test_duration_is_written_once(self):
+        out, _ = e.multi(self.SRC, self.at("c4", "e g", "g e", "e }"), "duration", "8")
+        self.assertIn("{ c8 e g e }", out)
+        out, _ = e.multi(self.SRC, self.at("e g", "g e"), "duration", "8")
+        self.assertIn("{ c4 e8 g e4 }", out)
+
+    def test_dot_all_or_none(self):
+        out, pos = e.multi(self.SRC, self.at("c4", "e g"), "dot")
+        self.assertIn("{ c4. e g4 e }", out)
+        back, _ = e.multi(out, pos, "dot")
+        self.assertIn("{ c4 e g4 e }", back)  # g4 was written by the first edit, and is right
+
+    def test_marks_add_to_all_then_remove_from_all(self):
+        some = e.toggle(self.SRC, self.SRC.index("e g"), "staccato")
+        pos = [some.index("c4"), some.index("e-."), some.index("g e")]
+        out, pos = e.multi(some, pos, "toggle", "staccato")
+        self.assertIn("{ c4-. e-. g-. e }", out)
+        out, _ = e.multi(out, pos, "toggle", "staccato")
+        self.assertIn("{ c4 e g e }", out)
+
+    def test_chord_notes_count_once(self):
+        out, _ = e.multi(self.SRC, self.at("<g", "b d", "d>"), "toggle", "fermata")
+        self.assertIn("<g b d>2\\fermata r4", out)
+
+    def test_rests_are_skipped_by_pitch_edits(self):
+        out, pos = e.multi(self.SRC, self.at("r4", "fis"), "alter", 0)
+        self.assertIn("r4 f8 g", out)
+        self.assertEqual(out[pos[0]], "r")
+
+    def test_delete(self):
+        out, pos = e.multi(self.SRC, self.at("r4", "fis"), "delete")
+        self.assertEqual(pos, [])
+        self.assertIn("<g b d>2 g8 |", out)
+
+    def test_slur_in_each_voice_and_off_again(self):
+        positions = self.at("c4", "e }", "c,2", "g' }")
+        pairs = [(positions[0], positions[1]), (positions[2], positions[3])]
+        out, pos = e.span(self.SRC, pairs, "slur", positions)
+        self.assertIn("{ c4( e g e) } \\\\ { c,2( g') }", out)
+        back, _ = e.span(out, [(pos[0], pos[1]), (pos[2], pos[3])], "slur")
+        self.assertEqual(back, self.SRC)
+
+    def test_hairpin(self):
+        out, _ = e.span(self.SRC, [tuple(self.at("<g", "g |"))], "cresc")
+        self.assertIn("<g b d>2\\< r4 fis8 g\\! |", out)
+
+    def test_one_note_is_not_a_span(self):
+        reply = json.loads(e.call(json.dumps({"op": "span", "text": self.SRC, "kind": "slur",
+                                              "pairs": [[self.SRC.index("c4"), self.SRC.index("c4")]]})))
+        self.assertIn("error", reply)
+
+
 if __name__ == "__main__":
     unittest.main()

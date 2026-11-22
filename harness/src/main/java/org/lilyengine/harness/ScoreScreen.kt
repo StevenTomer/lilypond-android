@@ -126,6 +126,11 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     val tools = remember { LilyTools(context) }
     /** Source offset of the selected note or rest; the selection follows it across re-renders. */
     var selectedOffset by remember { mutableStateOf<Int?>(null) }
+    /**
+     * A range drawn with the pen: the source offsets of its notes and rests
+     * (two or more), which the selection follows across re-renders and edits.
+     */
+    var range by remember { mutableStateOf<List<Int>>(emptyList()) }
     val undo = remember { ArrayDeque<String>() }
     var busy by remember { mutableStateOf(false) }
     // Python starts in the background, so the first edit doesn't wait for it.
@@ -220,10 +225,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         document = newDoc
         lookup = r.scoreMap?.let { ScoreLookup(it) }
         renderedText = source
-        selection = selectedOffset?.let { off ->
+        selection = (range.ifEmpty { listOfNotNull(selectedOffset) }).flatMap { off ->
             val (line, char) = SourcePositions.locationOf(source, off)
-            lookup?.objectsAtSource(line, char, "score.ly")
-        }.orEmpty()
+            lookup?.objectsAtSource(line, char, "score.ly").orEmpty()
+        }.distinct()
         // Keep the edited note in view: the preview and the whole score put it on different pages.
         val l = lookup
         selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }?.let { g ->
@@ -277,6 +282,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         val l = lookup ?: return
         if (value.text != renderedText) return // positions have moved since the render
         val (line, char) = SourcePositions.locationOf(value.text, value.selection.start)
+        range = emptyList()
         selection = l.objectsAtSource(line, char, "score.ly")
         selectedOffset = selection.firstNotNullOfOrNull { it.origin }
             ?.let { SourcePositions.offsetOf(value.text, it.line, it.char) }
@@ -289,6 +295,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
 
     fun onTap(g: Grob?) {
         val l = lookup ?: return
+        range = emptyList()
         if (g == null) { selection = emptyList(); selectedOffset = null; return }
         selection = l.sameOrigin(g)
         val origin = g.origin ?: return
@@ -300,12 +307,75 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         softKeyboard?.hide() // a pen tap shouldn't bring up the keyboard
     }
 
-    /** The marks on the selected note (articulations, dynamics, slurs…), as LilyTools.toggle names them. */
+    /** A range drawn with the pen: its notes and rests are selected. */
+    fun onSelectRange(grobs: List<Grob>) {
+        if (text.text != renderedText) return
+        val items = grobs.filter { it.origin != null }
+        val offsets = items.map { SourcePositions.offsetOf(text.text, it.origin!!.line, it.origin!!.char) }.distinct().sorted()
+        when (offsets.size) {
+            0 -> onTap(null)
+            1 -> onTap(items.first())
+            else -> {
+                range = offsets
+                selection = grobs
+                selectedOffset = offsets.first()
+                text = text.copy(selection = TextRange(offsets.first(), SourcePositions.tokenEnd(text.text, offsets.last())))
+                softKeyboard?.hide()
+            }
+        }
+    }
+
+    /** The marks on the selected note, or on every item of the range (articulations, dynamics, slurs…), as LilyTools.toggle names them. */
     var selectedMarks by remember { mutableStateOf(emptySet<String>()) }
-    LaunchedEffect(selectedOffset, text.text) {
-        val at = selectedOffset
-        selectedMarks = if (at == null || at >= text.text.length) emptySet()
-        else runCatching { tools.marks(text.text, at) }.getOrDefault(emptySet())
+    LaunchedEffect(selectedOffset, range, text.text) {
+        val at = range.ifEmpty { listOfNotNull(selectedOffset) }.filter { it < text.text.length }
+        selectedMarks = if (at.isEmpty() || at.size > MAX_MARKS_LOOKUPS) emptySet()
+        else runCatching { at.map { tools.marks(text.text, it) }.reduce { a, b -> a intersect b } }.getOrDefault(emptySet())
+    }
+
+    /** Runs an edit on every item of the range, as one text change; the range follows its items. */
+    fun rangeEdit(action: suspend (source: String, offsets: List<Int>) -> LilyTools.RangeEdit) {
+        if (busy || range.size < 2) return
+        busy = true
+        scope.launch {
+            try {
+                val before = text.text
+                val r = action(before, range)
+                if (!r.edit.isEmpty) {
+                    undo.addLast(before)
+                    val after = r.edit.applyTo(before)
+                    selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
+                    range = r.offsets.takeIf { it.size >= 2 }.orEmpty()
+                    selectedOffset = r.offsets.firstOrNull()
+                    if (r.offsets.isEmpty()) selection = emptyList()
+                    text = TextFieldValue(
+                        after,
+                        if (r.offsets.isEmpty()) TextRange(0)
+                        else TextRange(r.offsets.first(), SourcePositions.tokenEnd(after, r.offsets.last())),
+                    )
+                }
+            } catch (ex: LilyTools.EditException) {
+                status = "Can't do that here: ${ex.message}"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    /** A slur or hairpin over the range: from its first to its last note or rest in each voice. */
+    fun spanRange(kind: String) {
+        val r = renderedText
+        val pairs = selection.filter { (it.type == "NoteHead" || it.type == "Rest") && it.origin != null }
+            .groupBy { it.voiceId.orEmpty() }
+            .mapNotNull { (_, gs) ->
+                val offs = gs.map { SourcePositions.offsetOf(r, it.origin!!.line, it.origin!!.char) }
+                (offs.min() to offs.max()).takeIf { it.first != it.second }
+            }
+        if (pairs.isEmpty()) {
+            status = "Select two or more notes in a voice for a slur or hairpin."
+            return
+        }
+        rangeEdit { src, offsets -> tools.span(src, pairs, kind, offsets) }
     }
 
     /** Runs a structural edit on the selected item and applies the result as one text change. */
@@ -379,6 +449,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
 
     fun undoLast() {
         val previous = undo.removeLastOrNull() ?: return
+        range = emptyList()
         text = TextFieldValue(previous, TextRange(selectedOffset?.coerceAtMost(previous.length) ?: 0))
     }
 
@@ -462,7 +533,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         }) { Text("Share log") }
                     }
                 }
-                SelectionInfo(selection, lookup)
+                SelectionInfo(selection, lookup, range.size)
                 if (entering) EntryBar(
                     duration = entryDuration,
                     dot = entryDot,
@@ -476,24 +547,55 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 ) else {
                     val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
                         ?.takeIf { text.text == renderedText }
+                    val inRange = range.size >= 2 && selected != null
+                    val pitch = selected?.pitch
                     EditBar(
-                        selected = selected,
+                        enabled = selected != null,
+                        pitched = if (inRange) selection.any { it.type == "NoteHead" } else pitch != null,
                         canUndo = undo.isNotEmpty(),
-                        onPitch = { p -> edit { src, off -> tools.setPitch(src, off, p) } },
-                        onStep = { by -> edit { src, off -> tools.step(src, off, by) } },
-                        onDuration = { d -> edit { src, off -> tools.setDuration(src, off, d) } },
-                        onDelete = { edit { src, off -> tools.delete(src, off) } },
+                        onStep = { by ->
+                            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Step(by)) }
+                            else edit { src, off -> tools.step(src, off, by) }
+                        },
+                        onAlter = { semitones ->
+                            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Alter(semitones)) }
+                            else if (pitch != null) {
+                                val p = LilyTools.Pitch(pitch.notename, semitones, pitch.octave)
+                                edit { src, off -> tools.setPitch(src, off, p) }
+                            }
+                        },
+                        onDuration = { d ->
+                            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Duration(d)) }
+                            else edit { src, off -> tools.setDuration(src, off, d) }
+                        },
+                        onDot = {
+                            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Dot) }
+                            else selected?.duration?.let { d ->
+                                val nd = if (d.endsWith(".")) d.trimEnd('.') else "$d."
+                                edit { src, off -> tools.setDuration(src, off, nd) }
+                            }
+                        },
+                        onDelete = {
+                            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) }
+                            else edit { src, off -> tools.delete(src, off) }
+                        },
                         onUndo = ::undoLast,
                     )
                     MarksBar(
                         enabled = selected != null,
+                        range = inRange,
                         on = selectedMarks,
-                        onToggle = { what -> edit { src, off -> tools.toggle(src, off, what) } },
+                        onToggle = { what ->
+                            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Toggle(what)) }
+                            else edit { src, off -> tools.toggle(src, off, what) }
+                        },
+                        onSpan = ::spanRange,
                     )
                 }
                 if (entering && !landscape) piano()
                 ScoreView(
                     document, lookup, if (playback != null) cursor else selection, ::onTap,
+                    onSelectRange = ::onSelectRange,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
                     state = viewState,
                     onDragSteps = { g, steps ->
@@ -514,6 +616,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     value = text,
                     onValueChange = { v ->
                         val moved = v.selection != text.selection
+                        if (v.text != text.text) range = emptyList() // typed: the offsets have moved
                         text = v
                         if (moved) selectFromCursor(v)
                     },
@@ -724,22 +827,45 @@ private fun Piano(low: Int, octaves: Int, onKey: (Int) -> Unit, modifier: Modifi
 
 /** Articulations, dynamics, slurs, ties and hairpins for the selected note; those on it are filled. */
 @Composable
-private fun MarksBar(enabled: Boolean, on: Set<String>, onToggle: (String) -> Unit) {
+private fun MarksBar(
+    enabled: Boolean,
+    /** A range is selected: the lines go over it, from its first to its last note in each voice. */
+    range: Boolean,
+    on: Set<String>,
+    onToggle: (String) -> Unit,
+    onSpan: (String) -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val pad = PaddingValues(horizontal = 8.dp)
         for ((group, marks) in MARKS) {
             Text(group, fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(start = 6.dp, end = 2.dp))
+            if (group == LINES && range) {
+                for ((kind, label) in RANGE_LINES) OutlinedButton(onClick = { onSpan(kind) }, enabled = enabled, contentPadding = pad) { Text(label) }
+                for ((what, label) in marks.filter { it.first == "tie" }) {
+                    if (what in on) Button(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
+                    else OutlinedButton(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
+                }
+                continue
+            }
             for ((what, label) in marks) {
-                val pad = PaddingValues(horizontal = 8.dp)
                 if (what in on) Button(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
                 else OutlinedButton(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
             }
         }
     }
 }
+
+private const val LINES = "Lines"
+
+/** With a range selected, slurs and hairpins go over it (LilyTools.span's kinds). */
+private val RANGE_LINES = listOf("slur" to "slur ( )", "cresc" to "cresc <", "decresc" to "dim >")
+
+/** Above this many items in a range, the marks on all of them aren't looked up. */
+private const val MAX_MARKS_LOOKUPS = 40
 
 /** The marks bar's buttons: what LilyTools.toggle calls each mark, and its label. */
 private val MARKS = listOf(
@@ -748,7 +874,7 @@ private val MARKS = listOf(
         "staccatissimo" to "▾", "fermata" to "fermata", "trill" to "tr",
     ),
     "Dynamics" to listOf("pp", "p", "mp", "mf", "f", "ff", "sfz").map { it to it },
-    "Lines" to listOf(
+    LINES to listOf(
         "slur-start" to "(", "slur-end" to ")", "tie" to "tie",
         "cresc" to "cresc <", "decresc" to "dim >", "hairpin-end" to "end",
     ),
@@ -757,17 +883,18 @@ private val MARKS = listOf(
 /** Pitch, duration and delete buttons for the selected note (or rest). */
 @Composable
 private fun EditBar(
-    selected: Grob?,
+    enabled: Boolean,
+    /** There is a note to change the pitch of (not only rests). */
+    pitched: Boolean,
     canUndo: Boolean,
-    onPitch: (LilyTools.Pitch) -> Unit,
     onStep: (Int) -> Unit,
+    /** A new accidental: 1 sharp, -1 flat, 0 natural. */
+    onAlter: (Int) -> Unit,
     onDuration: (String) -> Unit,
+    onDot: () -> Unit,
     onDelete: () -> Unit,
     onUndo: () -> Unit,
 ) {
-    val pitch = selected?.pitch?.let {
-        LilyTools.Pitch(it.notename, (ScoreMapRational.parse(it.alteration) * 2).roundToInt(), it.octave)
-    }
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -775,17 +902,14 @@ private fun EditBar(
         @Composable
         fun B(label: String, enabled: Boolean = true, onClick: () -> Unit) =
             OutlinedButton(onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(label) }
-        B("▲", pitch != null) { onStep(+1) }
-        B("▼", pitch != null) { onStep(-1) }
-        B("♯", pitch != null) { pitch?.let { onPitch(it.copy(semitones = 1)) } }
-        B("♭", pitch != null) { pitch?.let { onPitch(it.copy(semitones = -1)) } }
-        B("♮", pitch != null) { pitch?.let { onPitch(it.copy(semitones = 0)) } }
-        for (d in listOf("1", "2", "4", "8", "16")) B(d, selected != null) { onDuration(d) }
-        B("Dot", selected?.duration != null) {
-            val d = selected?.duration ?: return@B
-            onDuration(if (d.endsWith(".")) d.trimEnd('.') else "$d.")
-        }
-        B("Delete", selected != null, onDelete)
+        B("▲", pitched) { onStep(+1) }
+        B("▼", pitched) { onStep(-1) }
+        B("♯", pitched) { onAlter(1) }
+        B("♭", pitched) { onAlter(-1) }
+        B("♮", pitched) { onAlter(0) }
+        for (d in listOf("1", "2", "4", "8", "16")) B(d, enabled) { onDuration(d) }
+        B("Dot", enabled, onDot)
+        B("Delete", enabled, onDelete)
         B("Undo", canUndo, onUndo)
     }
 }
@@ -798,12 +922,27 @@ private object ScoreMapRational {
 }
 
 @Composable
-private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?) {
+private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItems: Int) {
     val g = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" } ?: selection.firstOrNull()
     val voices = remember(lookup) { lookup?.map?.grobs?.mapNotNull { it.voice }?.distinct()?.sorted().orEmpty() }
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         if (g == null) {
-            Text("Tap a note, or move the cursor in the source.", fontSize = 13.sp, color = Color.Gray)
+            Text("Tap a note, or draw a box around notes with the pen.", fontSize = 13.sp, color = Color.Gray)
+            return@Row
+        }
+        if (rangeItems >= 2) {
+            val inRange = selection.filter { it.type == "NoteHead" || it.type == "Rest" }
+            for (v in inRange.map { it.voice }.distinct()) Box(Modifier.padding(top = 3.dp).size(12.dp).background(voiceColor(v, voices)))
+            val heads = inRange.count { it.type == "NoteHead" }
+            val rests = inRange.count { it.type == "Rest" }
+            val voiceCount = inRange.map { it.voiceId }.distinct().size
+            Text(
+                listOfNotNull(
+                    heads.takeIf { it > 0 }?.let { "$it note${if (it > 1) "s" else ""}" },
+                    rests.takeIf { it > 0 }?.let { "$it rest${if (it > 1) "s" else ""}" },
+                ).joinToString(" and ") + " selected" + if (voiceCount > 1) ", in $voiceCount voices" else "",
+                fontSize = 13.sp,
+            )
             return@Row
         }
         Box(Modifier.padding(top = 3.dp).size(12.dp).background(voiceColor(g.voice, voices)))

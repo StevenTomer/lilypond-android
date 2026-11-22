@@ -67,6 +67,40 @@ class LilyToolsTest {
     }
 
     @Test
+    fun rangeAcrossTwoVoices() = runBlocking {
+        // The first bar of both voices, as a pen box would select it.
+        val tokens = listOf("c4 e", "e g", "g e", "e }", "c,2", "g' }")
+        var offsets = tokens.map { POLY_SAMPLE.indexOf(it) }
+        var src = POLY_SAMPLE
+        suspend fun apply(r: LilyTools.RangeEdit) {
+            src = r.edit.applyTo(src)
+            offsets = r.offsets
+        }
+        apply(tools.range(src, offsets, LilyTools.RangeOp.Step(1)))
+        apply(tools.range(src, offsets, LilyTools.RangeOp.Toggle("staccato")))
+        // A slur in each voice, from its first to its last note.
+        apply(tools.span(src, listOf(offsets[0] to offsets[3], offsets[4] to offsets[5]), "slur", offsets))
+        assertTrue(src, src.contains("<< { d4-.( fis-. a-. fis-.) } \\\\ { d,2-.( a'-.) } >>"))
+        assertEquals(tokens.size, offsets.size)
+
+        val r = engine.render(src)
+        assertTrue(r.log, r.success)
+        val grobs = r.scoreMap!!.grobs
+        assertEquals(listOf("1", "2"), grobs.filter { it.type == "Slur" }.map { it.voiceId }.sortedBy { it })
+        assertEquals(6, grobs.count { it.type == "Script" })
+        // Stepped up a scale step in G major; the music after the << >> is untouched.
+        val after = heads(src)
+        assertEquals(listOf("d''", "fis''", "a''", "fis''"), after["1"])
+        assertEquals(listOf("d'", "a'"), after["2"])
+        assertEquals(heads(POLY_SAMPLE)[""], after[""])
+
+        // Delete takes the whole range, and the next bar still sounds the same.
+        val d = tools.range(src, offsets, LilyTools.RangeOp.Delete)
+        assertTrue(d.offsets.isEmpty())
+        assertEquals(heads(POLY_SAMPLE)[""], heads(d.edit.applyTo(src))[""])
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

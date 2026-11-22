@@ -59,7 +59,7 @@ This plan covers the pieces needed before the editor and the editor phases after
   - The harness **Score** tab: editable source, auto-render 0.6 s after typing stops
     (a newer edit cancels the running render), tap a note to select its source, move the
     cursor to highlight the note, Play for MIDI, and Go to error.
-  - Still to do: lasso and range selection, the hover ghost note (the pitch under the
+  - Still to do: the hover ghost note (the pitch under the
     pen), tiled rendering for deep zoom (pages are drawn sharp up to 2.5x, then scaled).
 - **M1 fast edit view, done (differently than planned):** `Options.window` engraves only a
   stretch of the music. The settings file `window.ly` wraps each score the way LilyPond's
@@ -167,6 +167,27 @@ This plan covers the pieces needed before the editor and the editor phases after
   - Tests: 10 Python tests, plus an instrumented test that renders the result and
     checks, from the score map, that each Script, DynamicText and Slur is in the
     right voice.
+
+- **0.12.0, range selection (E2):**
+  - The pen draws a box (from anywhere but a selected note head), and the note heads
+    and rests it touches are selected, on one page. A finger still scrolls.
+    `ScoreView.onSelectRange`.
+  - `lilyedit.multi` applies one edit to every item of a range, last first so the
+    earlier positions stay valid: step, accidental, duration, dot, delete, or a mark.
+    Marks are added to all, or taken off if all have them. Chord notes count once,
+    rests are skipped by pitch edits, and repeated durations are dropped
+    (`c8 e8 g8` becomes `c8 e g`).
+  - `lilyedit.span` draws a slur or hairpin from the first to the last item of each
+    voice of the range.
+  - Both return where the selected items are afterwards: notes are found again by
+    note index, other items by item index. So the range stays selected across edits
+    and re-renders.
+  - The Score tab: the edit bar and marks row act on the whole range, and with a
+    range the Lines group becomes "slur ( )", "cresc <" and "dim >" over it. The info
+    line counts the notes and rests and the voices.
+  - Tests: 10 Python tests, plus an instrumented test across both voices of `\\`:
+    step, staccato, a slur per voice, and delete, checked against LilyPond's
+    engraving.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

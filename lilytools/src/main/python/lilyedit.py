@@ -475,6 +475,137 @@ def toggle(text, pos, what):
 
 
 # --------------------------------------------------------------------------
+# Edits on a range: several notes, chords and rests at once
+
+def set_alter(text, pos, alter):
+    """Gives the note at `pos` a new accidental (alter in whole tones),
+    keeping its note name and octave."""
+    n = notes(text)[_note_index(notes(text), pos)]
+    return set_pitch(text, pos, n.note, alter, n.octave)
+
+
+def _identify(text, positions):
+    """What each position is, so it can be found again after an edit that
+    adds or removes no notes: ("n", note index) or ("i", item index)."""
+    notes_ = notes(text)
+    items = _items(text)
+    ids = []
+    for p in positions:
+        try:
+            ids.append(("n", _note_index(notes_, p)))
+        except ValueError:
+            ids.append(("i", _item_index(text, items, p)))
+    return ids
+
+
+def _locate(text, ids):
+    notes_ = notes(text)
+    items = _items(text)
+    return [notes_[k].pos if kind == "n" else _item_start(text, items[k][0]) for kind, k in ids]
+
+
+def _item_starts(text, positions):
+    """The items (notes, chords, rests) at `positions`, each once, as
+    (start, item index, item, effective duration), last first."""
+    items = _items(text)
+    found = {}
+    for p in positions:
+        k = _item_index(text, items, p)
+        it, _, effective = items[k]
+        found[k] = (_item_start(text, it), k, it, effective)
+    return sorted(found.values(), reverse=True)
+
+
+def _drop_repeated_durations(text, indices, before):
+    """Removes the written duration of the items at `indices` where it is
+    the one in effect anyway (c8 e8 g8 -> c8 e g), last first; also of the
+    item after each, if it had none written in `before` (the items before
+    the edit)."""
+    items = _items(text)
+    extra = [k + 1 for k in indices if k + 1 < len(before) and before[k + 1][1] is None]
+    for k in sorted(set(indices) | set(extra), reverse=True):
+        it, written, _ = items[k]
+        if k > 0 and written is not None and written == items[k - 1][2] and it.dur_tokens:
+            text = text[:it.dur_tokens[0].pos] + text[it.dur_tokens[-1].end:]
+    return text
+
+
+def multi(text, positions, op, arg=None):
+    """Applies an edit to every note, chord or rest at `positions` (from a
+    selected range) and returns (text, new positions of the same items).
+    Edits go from the last item to the first, so the earlier positions stay
+    valid, and each keeps the rest of the music sounding as before.
+
+    op: "step" (arg: scale steps), "alter" (arg: whole tones; rests are
+    skipped), "duration" (arg: e.g. "8."), "dot" (dots every item, or takes
+    the dot off if all have one), "toggle" (arg: a mark; added to every item,
+    or taken off if all have it), "delete" (new positions: none)."""
+    ids = _identify(text, positions)
+    if op in ("step", "alter"):
+        notes_ = notes(text)
+        targets = sorted({notes_[k].pos for kind, k in ids if kind == "n"}, reverse=True)
+        for p in targets:
+            text = step(text, p, arg) if op == "step" else set_alter(text, p, arg)
+    elif op == "duration":
+        original = _items(text)
+        found = _item_starts(text, positions)
+        for start, _, _, _ in found:
+            text = set_duration(text, start, arg)
+        text = _drop_repeated_durations(text, [k for _, k, _, _ in found], original)
+    elif op == "dot":
+        original = _items(text)
+        found = _item_starts(text, positions)
+        all_dotted = all(d.endswith(".") for _, _, _, d in found)
+        for start, _, _, d in found:
+            if all_dotted:
+                text = set_duration(text, start, d.rstrip("."))
+            elif not d.endswith("."):
+                text = set_duration(text, start, d + ".")
+        text = _drop_repeated_durations(text, [k for _, k, _, _ in found], original)
+    elif op == "toggle":
+        found = _item_starts(text, positions)
+        all_have = all(arg in marks(text, start) for start, _, _, _ in found)
+        for start, _, _, _ in found:
+            if all_have or arg not in marks(text, start):
+                text = toggle(text, start, arg)
+    elif op == "delete":
+        for start, _, _, _ in _item_starts(text, positions):
+            text = delete(text, start)
+        return text, []
+    else:
+        raise ValueError("unknown range edit " + op)
+    return text, _locate(text, ids)
+
+
+_SPAN_MARKS = {"slur": ("slur-start", "slur-end"), "cresc": ("cresc", "hairpin-end"),
+               "decresc": ("decresc", "hairpin-end")}
+
+
+def span(text, pairs, kind, positions=()):
+    """Draws a slur or hairpin ("slur", "cresc", "decresc") over each
+    (first, last) pair of positions, e.g. one pair per voice of a selected
+    range; if every pair has it already, takes them off. Returns (text, new
+    positions of `positions`)."""
+    begin, end = _SPAN_MARKS[kind]
+    ids = _identify(text, positions)
+    items = _items(text)
+    edits = []
+    for first, last in pairs:
+        a = _item_index(text, items, first)
+        b = _item_index(text, items, last)
+        if a == b:
+            raise ValueError("a slur or hairpin needs two notes or more in a voice")
+        a, b = min(a, b), max(a, b)
+        edits.append((_item_start(text, items[a][0]), begin))
+        edits.append((_item_start(text, items[b][0]), end))
+    all_have = all(m in marks(text, p) for p, m in edits)
+    for p, m in sorted(edits, reverse=True):
+        if all_have or m not in marks(text, p):
+            text = toggle(text, p, m)
+    return text, _locate(text, ids)
+
+
+# --------------------------------------------------------------------------
 # Note entry (from a MIDI keyboard or an on-screen piano)
 
 # Positions on the line of fifths (C = 0, G = 1, F = -1) of the natural notes.
@@ -588,6 +719,12 @@ def call(request_json):
             return json.dumps({"text": out, "start": start})
         elif op == "toggle":
             out = toggle(text, req["pos"], req["what"])
+        elif op == "multi":
+            out, positions = multi(text, req["positions"], req["edit"], req.get("arg"))
+            return json.dumps({"text": out, "positions": positions})
+        elif op == "span":
+            out, positions = span(text, req["pairs"], req["kind"], req.get("positions", []))
+            return json.dumps({"text": out, "positions": positions})
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":

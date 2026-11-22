@@ -35,6 +35,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -43,6 +44,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -164,12 +166,21 @@ fun ScoreView(
      * positive. A pen drags at once; a finger after a long press.
      */
     onDragSteps: ((Grob, Int) -> Unit)? = null,
+    /**
+     * Called when the pen draws a box (from anywhere but a selected note
+     * head): the note heads and rests it touches, on one page. A finger
+     * still scrolls.
+     */
+    onSelectRange: ((List<Grob>) -> Unit)? = null,
 ) {
     var hover by remember { mutableStateOf<Grob?>(null) }
     // Read inside the drag gesture, which mustn't restart when a long press selects a note.
     val currentSelection by rememberUpdatedState(selection)
     val currentOnTap by rememberUpdatedState(onTap)
     val currentOnDragSteps by rememberUpdatedState(onDragSteps)
+    val currentOnSelectRange by rememberUpdatedState(onSelectRange)
+    /** A box being drawn with the pen: its page, and its corners in points. */
+    var lasso by remember { mutableStateOf<Pair<Int, Rect>?>(null) }
     val haptics = LocalHapticFeedback.current
     /** A note head being dragged with the pen, and by how many staff positions. */
     var drag by remember { mutableStateOf<Pair<Grob, Int>?>(null) }
@@ -220,8 +231,8 @@ fun ScoreView(
                                 onTap(lookup?.objectAt(page, (off.x * k).toDouble(), (off.y * k).toDouble()))
                             }
                         }
-                        .pointerInput(lookup, page, wPt, onDragSteps != null) {
-                            if (lookup == null || currentOnDragSteps == null) return@pointerInput
+                        .pointerInput(lookup, page, wPt, onDragSteps != null, onSelectRange != null) {
+                            if (lookup == null || (currentOnDragSteps == null && currentOnSelectRange == null)) return@pointerInput
                             awaitEachGesture {
                                 // The Initial pass reaches this page before the list sees the
                                 // event, so a drag claimed here never scrolls or pans.
@@ -230,8 +241,20 @@ fun ScoreView(
                                 val x = (down.position.x * k).toDouble()
                                 val y = (down.position.y * k).toDouble()
                                 val pen = down.type == PointerType.Stylus || down.type == PointerType.Eraser
+                                val grabbed = if (pen) {
+                                    lookup.objectAt(page, x, y)?.takeIf { it.type == "NoteHead" && it in currentSelection && currentOnDragSteps != null }
+                                } else null
+                                if (pen && grabbed == null) {
+                                    // Not on a selected note: the pen draws a box to select a range.
+                                    if (currentOnSelectRange != null) {
+                                        drawBox(down, k, page, lookup, state, show = { lasso = it }) { currentOnSelectRange?.invoke(it) }
+                                    }
+                                    return@awaitEachGesture
+                                }
                                 val g = if (pen) {
-                                    lookup.objectAt(page, x, y)?.takeIf { it.type == "NoteHead" && it in currentSelection }
+                                    grabbed!!
+                                } else if (currentOnDragSteps == null) {
+                                    return@awaitEachGesture
                                 } else {
                                     // A fingertip covers more than a note head, and the point it
                                     // reports is often off the head: take the nearest selected
@@ -334,6 +357,12 @@ fun ScoreView(
                                     style = Stroke(width = 3.dp.toPx()),
                                 )
                             }
+                            lasso?.takeIf { it.first == page }?.let { (_, rect) ->
+                                val o = Offset(rect.left * px, rect.top * px)
+                                val sz = Size(rect.width * px, rect.height * px)
+                                drawRect(Color(0x223F51B5), o, sz)
+                                drawRect(Color(0xFF3F51B5), o, sz, style = Stroke(width = 1.5.dp.toPx()))
+                            }
                             hover?.takeIf { it.page == page }?.let { g ->
                                 val (o, s) = box(g, 0.3f)
                                 drawRect(voiceColor(g.voice, voices), o, s, style = Stroke(width = 1.5.dp.toPx()))
@@ -343,6 +372,50 @@ fun ScoreView(
                 }
             }
         }
+    }
+}
+
+/**
+ * The pen draws a box from [down]: once it has moved past the touch slop
+ * (before that it may still be a tap), the box follows it, shown through
+ * [show] in page points (k points per pixel), and on lifting the note heads
+ * and rests it touches are passed to the range callback.
+ */
+private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.drawBox(
+    down: PointerInputChange,
+    k: Float,
+    page: Int,
+    lookup: ScoreLookup,
+    state: ScoreViewState,
+    show: (Pair<Int, Rect>?) -> Unit,
+    onDone: (List<Grob>) -> Unit,
+) {
+    while (true) {
+        val c = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: return
+        if (!c.pressed) return // a tap
+        if ((c.position - down.position).getDistance() > viewConfiguration.touchSlop) break
+    }
+    state.noteDrag = true // no panning meanwhile
+    fun rect(p: Offset) = Rect(
+        minOf(down.position.x, p.x) * k, minOf(down.position.y, p.y) * k,
+        maxOf(down.position.x, p.x) * k, maxOf(down.position.y, p.y) * k,
+    )
+    var box = rect(down.position)
+    try {
+        while (true) {
+            val c = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+            c.consume() // not a scroll or tap
+            box = rect(c.position)
+            show(page to box)
+            if (!c.pressed) break
+        }
+        onDone(lookup.grobsOnPage(page).filter { g ->
+            (g.type == "NoteHead" || g.type == "Rest") &&
+                lookup.pageRect(g).let { r -> r[2] >= box.left && r[0] <= box.right && r[3] >= box.top && r[1] <= box.bottom }
+        })
+    } finally {
+        show(null)
+        state.noteDrag = false
     }
 }
 

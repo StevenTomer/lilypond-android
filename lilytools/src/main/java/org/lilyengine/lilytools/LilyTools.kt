@@ -84,6 +84,55 @@ class LilyTools(context: Context) {
         JSONObject().put("op", "toggle").put("pos", text.codePointCount(0, offset)).put("what", what),
     )
 
+    /** The result of a range edit: the edit, and where the selected items are in the edited text. */
+    data class RangeEdit(val edit: TextEdit, val offsets: List<Int>)
+
+    /** An edit on every note, chord or rest of a selected range. */
+    sealed class RangeOp(internal val name: String, internal val arg: Any?) {
+        /** Scale steps, following the key, as [step]. */
+        class Step(by: Int) : RangeOp("step", by)
+        /** A new accidental for every note (1 = sharp, -1 = flat); rests are left alone. */
+        class Alter(semitones: Int) : RangeOp("alter", semitones / 2.0)
+        class Duration(duration: String) : RangeOp("duration", duration)
+        /** Dots every item, or takes the dots off if all have one. */
+        object Dot : RangeOp("dot", null)
+        /** Adds the mark ([toggle]'s names) to every item, or takes it off if all have it. */
+        class Toggle(what: String) : RangeOp("toggle", what)
+        object Delete : RangeOp("delete", null)
+    }
+
+    /**
+     * Applies [op] to the items at [offsets] (chord notes count once), as one
+     * edit, keeping the other music sounding as before. The new offsets are
+     * of the same items, in the same order (none after a delete).
+     */
+    suspend fun range(text: String, offsets: List<Int>, op: RangeOp): RangeEdit = rangeCall(
+        text,
+        JSONObject().put("op", "multi").put("edit", op.name).put("arg", op.arg ?: JSONObject.NULL)
+            .put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) })),
+    )
+
+    /**
+     * A slur or hairpin ("slur", "cresc", "decresc") from the first to the
+     * last offset of each pair (one pair per voice of a range); if all have
+     * one, they are taken off. [offsets] are found again as in [range].
+     */
+    suspend fun span(text: String, pairs: List<Pair<Int, Int>>, kind: String, offsets: List<Int>): RangeEdit = rangeCall(
+        text,
+        JSONObject().put("op", "span").put("kind", kind)
+            .put("pairs", org.json.JSONArray(pairs.map { (a, b) -> org.json.JSONArray(listOf(text.codePointCount(0, a), text.codePointCount(0, b))) }))
+            .put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) })),
+    )
+
+    private suspend fun rangeCall(text: String, request: JSONObject): RangeEdit = withContext(dispatcher) {
+        request.put("text", text)
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val result = reply.getString("text")
+        val positions = reply.getJSONArray("positions")
+        RangeEdit(TextEdit.between(text, result), (0 until positions.length()).map { result.offsetByCodePoints(0, positions.getInt(it)) })
+    }
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))
