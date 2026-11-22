@@ -145,5 +145,81 @@ class Bridge(unittest.TestCase):
         self.assertIn("d4 fis a", out)
 
 
+class Spell(unittest.TestCase):
+    def spelled(self, midi_key, key_text):
+        n, a, o = e.spell(midi_key, e.key_at(key_text + " c", len(key_text) + 1))
+        return "cdefgab"[n] + {-0.5: "es", 0: "", 0.5: "is"}[float(a)], o
+
+    def test_key_decides_sharps_or_flats(self):
+        self.assertEqual(self.spelled(61, "\\key g \\major"), ("cis", 1))
+        self.assertEqual(self.spelled(61, "\\key f \\major"), ("des", 1))
+        self.assertEqual(self.spelled(70, ""), ("bes", 1))  # C major
+        self.assertEqual(self.spelled(66, ""), ("fis", 1))
+
+    def test_scale_notes_and_leading_tone(self):
+        self.assertEqual(self.spelled(65, "\\key d \\major"), ("f", 1))
+        self.assertEqual(self.spelled(66, "\\key d \\major"), ("fis", 1))
+        self.assertEqual(self.spelled(68, "\\key a \\minor"), ("gis", 1))
+        self.assertEqual(self.spelled(63, "\\key c \\minor"), ("ees", 1))
+
+    def test_octave_follows_the_written_note(self):
+        self.assertEqual(self.spelled(60, "\\key cis \\major"), ("bis", 0))  # sounds as c'
+        self.assertEqual(self.spelled(59, "\\key ges \\major"), ("ces", 1))  # sounds as b
+        self.assertEqual(self.spelled(36, ""), ("c", -1))
+
+
+class Insert(unittest.TestCase):
+    REL = "\\relative c'' { c4 e g e | c1 }"
+
+    def test_after_a_note_in_relative(self):
+        at = self.REL.index(" e ") + 1
+        out, start = e.insert(self.REL, at, [64], None, True)  # e' below the e''
+        self.assertEqual(out, "\\relative c'' { c4 e e, g' e | c1 }")
+        self.assertEqual(out[start:start + 2], "e,")
+        self.assertEqual(absolute(out)[4:], absolute(self.REL)[3:])  # g e c unchanged (index 0: the start pitch)
+
+    def test_new_duration_keeps_the_next_one(self):
+        at = self.REL.index(" e ") + 1
+        out, _ = e.insert(self.REL, at, [48], "8", True)
+        self.assertEqual(out, "\\relative c'' { c4 e c,,8 g'''4 e | c1 }")
+
+    def test_chord_before_a_note(self):
+        out, start = e.insert(self.REL, self.REL.index("c1"), [67, 60, 64])
+        self.assertEqual(out, "\\relative c'' { c4 e g e | <c, e g> c'1 }")
+        self.assertEqual(out[start], "<")
+
+    def test_rest_at_the_end(self):
+        out, _ = e.insert(self.REL, len(self.REL) - 2, [], "2")
+        self.assertEqual(out, "\\relative c'' { c4 e g e | c1 r2 }")
+
+    def test_voice_two_leaves_voice_one(self):
+        out, _ = e.insert(POLY, POLY.index("g' }"), [55], "4", True)
+        self.assertIn("{ c4 e g e } \\\\ { c,2 g' g,4 }", out)
+        b, a = absolute(POLY), absolute(out)
+        self.assertEqual(a[:7], b[:7])
+        self.assertEqual(a[7], (4, 0.0, 0))  # the new g
+        self.assertEqual(a[8:], b[7:])
+
+    def test_absolute_music(self):
+        src = "{ c'4 d' }"
+        out, _ = e.insert(src, src.index("d'"), [76], None, True)
+        self.assertEqual(out, "{ c'4 d' e'' }")
+
+    def test_after_a_chord_note_means_after_the_chord(self):
+        src = "{ <c' e'>2 g'2 }"
+        out, _ = e.insert(src, src.index("e'"), [62], "4", True)
+        self.assertEqual(out, "{ <c' e'>2 d'4 g'2 }")
+
+    def test_cursor_inside_a_note_inserts_after_it(self):
+        src = "{ fis'8 g' }"
+        out, _ = e.insert(src, src.index("is"), [64])
+        self.assertEqual(out, "{ fis'8 e' g' }")
+
+    def test_through_call(self):
+        reply = json.loads(e.call(json.dumps(
+            {"op": "insert", "text": self.REL, "pos": self.REL.index("c1"), "keys": [72]})))
+        self.assertEqual(reply["text"][reply["start"]:reply["start"] + 1], "c")
+
+
 if __name__ == "__main__":
     unittest.main()

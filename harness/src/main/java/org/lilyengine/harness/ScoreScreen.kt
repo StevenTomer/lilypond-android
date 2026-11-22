@@ -2,6 +2,13 @@ package org.lilyengine.harness
 
 import android.media.MediaPlayer
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -37,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -69,6 +77,11 @@ import org.lilyengine.scoreview.ScoreView
 import org.lilyengine.scoreview.SourcePositions
 import org.lilyengine.scoreview.rememberScoreViewState
 import org.lilyengine.scoreview.voiceColor
+import org.lilyengine.midi.ChordCollector
+import org.lilyengine.midi.MidiKeyboard
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.collectAsState
 
 /**
  * Point-and-click spike (roadmap M2): edit LilyPond source and see the score
@@ -78,7 +91,7 @@ import org.lilyengine.scoreview.voiceColor
  */
 @OptIn(FlowPreview::class)
 @Composable
-fun ScoreScreen(engine: LilyPondEngine) {
+fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var text by remember { mutableStateOf(TextFieldValue(SCORE_SAMPLE)) }
     var document by remember { mutableStateOf<ScoreDocument?>(null) }
     var lookup by remember { mutableStateOf<ScoreLookup?>(null) }
@@ -92,7 +105,7 @@ fun ScoreScreen(engine: LilyPondEngine) {
     val viewState = rememberScoreViewState()
     val scope = rememberCoroutineScope()
     val focus = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
+    val softKeyboard = LocalSoftwareKeyboardController.current
     val player = remember { mutableStateOf<MediaPlayer?>(null) }
     val context = LocalContext.current
     val tools = remember { LilyTools(context) }
@@ -121,6 +134,26 @@ fun ScoreScreen(engine: LilyPondEngine) {
             context.contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
             midiToImport = f
         }.onFailure { status = "Can't read that file: ${it.message}" }
+    }
+    /** Note entry: notes played or tapped go in after the selected note. */
+    var entering by remember { mutableStateOf(false) }
+    var entryDuration by remember { mutableStateOf("4") }
+    var entryDot by remember { mutableStateOf(false) }
+    /** Notes and chords waiting to be entered (MIDI keys; empty for a rest), in playing order. */
+    val entries = remember { Channel<List<Int>>(Channel.UNLIMITED) }
+    val connectedKeyboard by keyboard.connected.collectAsState()
+    DisposableEffect(keyboard, entering) {
+        if (!entering) return@DisposableEffect onDispose { }
+        val chords = ChordCollector { keys -> entries.trySend(keys) }
+        val listener: (MidiKeyboard.Event) -> Unit = { e ->
+            when (e) {
+                is MidiKeyboard.Event.NoteOn -> chords.noteOn(e.key)
+                is MidiKeyboard.Event.NoteOff -> chords.noteOff(e.key)
+                else -> {}
+            }
+        }
+        keyboard.addListener(listener)
+        onDispose { keyboard.removeListener(listener) }
     }
     /** Set by an edit: the text it produced and the moment of the edited note. */
     val pendingEdit = remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -206,7 +239,7 @@ fun ScoreScreen(engine: LilyPondEngine) {
         selectedOffset = start
         text = text.copy(selection = TextRange(start, SourcePositions.tokenEnd(text.text, start)))
         focus.requestFocus()
-        keyboard?.hide() // a pen tap shouldn't bring up the keyboard
+        softKeyboard?.hide() // a pen tap shouldn't bring up the keyboard
     }
 
     /** Runs a structural edit on the selected item and applies the result as one text change. */
@@ -232,6 +265,30 @@ fun ScoreScreen(engine: LilyPondEngine) {
                 }
             } catch (ex: LilyTools.EditException) {
                 status = "Can't do that here: ${ex.message}"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    // Enters queued notes one at a time, each after the one before.
+    LaunchedEffect(Unit) {
+        for (keys in entries) {
+            snapshotFlow { busy }.first { !it }
+            busy = true
+            try {
+                val before = text.text
+                val selected = selectedOffset?.takeIf { it < before.length }
+                val at = selected ?: text.selection.start
+                val duration = entryDuration + if (entryDot) "." else ""
+                val r = tools.insert(before, at, keys, duration, after = selected != null)
+                undo.addLast(before)
+                val after = r.edit.applyTo(before)
+                selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
+                selectedOffset = r.start
+                text = TextFieldValue(after, TextRange(r.start, SourcePositions.tokenEnd(after, r.start)))
+            } catch (ex: LilyTools.EditException) {
+                status = "Can't enter a note here: ${ex.message}"
             } finally {
                 busy = false
             }
@@ -272,14 +329,18 @@ fun ScoreScreen(engine: LilyPondEngine) {
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
+        val piano: @Composable () -> Unit = {
+            PianoBar(onKey = { k -> entries.trySend(listOf(k)); keyboard.play(listOf(k), 300) })
+        }
         val score: @Composable (Modifier) -> Unit = { m ->
             Column(m) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 ) {
-                    Text(status, fontSize = 13.sp, modifier = Modifier.weight(1f).padding(top = 10.dp))
                     error?.let { e -> TextButton(onClick = { jumpTo(e) }) { Text("Go to error") } }
+                    if (entering) Button(onClick = { entering = false }) { Text("✓ Enter notes") }
+                    else TextButton(onClick = { entering = true }) { Text("Enter notes") }
                     TextButton(onClick = {
                         pickMidi.launch(arrayOf("audio/midi", "audio/x-midi", "audio/sp-midi", "application/octet-stream"))
                     }) { Text("Import MIDI") }
@@ -301,8 +362,19 @@ fun ScoreScreen(engine: LilyPondEngine) {
                         }
                     }) { Text(if (player.value != null) "Stop" else "Play") }
                 }
+                Text(status, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
                 SelectionInfo(selection, lookup)
-                EditBar(
+                if (entering) EntryBar(
+                    duration = entryDuration,
+                    dot = entryDot,
+                    keyboardName = connectedKeyboard?.let(MidiKeyboard::name),
+                    hasPlace = selectedOffset != null,
+                    canUndo = undo.isNotEmpty(),
+                    onDuration = { entryDuration = it },
+                    onDot = { entryDot = !entryDot },
+                    onRest = { entries.trySend(emptyList()) },
+                    onUndo = ::undoLast,
+                ) else EditBar(
                     selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
                         ?.takeIf { text.text == renderedText },
                     canUndo = undo.isNotEmpty(),
@@ -312,6 +384,7 @@ fun ScoreScreen(engine: LilyPondEngine) {
                     onDelete = { edit { src, off -> tools.delete(src, off) } },
                     onUndo = ::undoLast,
                 )
+                if (entering && !landscape) piano()
                 ScoreView(
                     document, lookup, selection, ::onTap,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
@@ -328,7 +401,8 @@ fun ScoreScreen(engine: LilyPondEngine) {
             }
         }
         val editor: @Composable (Modifier) -> Unit = { m ->
-            Box(m.background(Color(0xFFFAFAFA)).verticalScroll(rememberScrollState()).padding(8.dp)) {
+          Column(m) {
+            Box(Modifier.weight(1f).background(Color(0xFFFAFAFA)).verticalScroll(rememberScrollState()).padding(8.dp)) {
                 BasicTextField(
                     value = text,
                     onValueChange = { v ->
@@ -342,6 +416,8 @@ fun ScoreScreen(engine: LilyPondEngine) {
                     modifier = Modifier.fillMaxWidth().focusRequester(focus),
                 )
             }
+            if (entering && landscape) piano()
+          }
         }
         if (landscape) {
             Row(Modifier.fillMaxSize()) {
@@ -397,6 +473,94 @@ private fun MidiImportDialog(onDismiss: () -> Unit, onImport: (LilyTools.MidiImp
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+/**
+ * Note entry: the duration for new notes, a rest, and undo. Notes come
+ * from a MIDI keyboard (a chord played on it comes in whole) or [PianoBar].
+ */
+@Composable
+private fun EntryBar(
+    duration: String,
+    dot: Boolean,
+    keyboardName: String?,
+    hasPlace: Boolean,
+    canUndo: Boolean,
+    onDuration: (String) -> Unit,
+    onDot: () -> Unit,
+    onRest: () -> Unit,
+    onUndo: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 4.dp, vertical = 2.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("New notes:", fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
+            for (d in listOf("1", "2", "4", "8", "16", "32")) {
+                if (d == duration) Button(onClick = { onDuration(d) }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(d) }
+                else OutlinedButton(onClick = { onDuration(d) }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(d) }
+            }
+            if (dot) Button(onClick = onDot, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Dot") }
+            else OutlinedButton(onClick = onDot, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Dot") }
+            OutlinedButton(onClick = onRest, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Rest") }
+            OutlinedButton(onClick = onUndo, enabled = canUndo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Undo") }
+            Text(
+                (if (hasPlace) "After the selected note. " else "At the cursor. ") +
+                    (keyboardName?.let { "Play on $it, or tap the piano." } ?: "Tap the piano, or plug in a MIDI keyboard."),
+                fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(horizontal = 6.dp),
+            )
+        }
+    }
+}
+
+private val ENTRY_BACKGROUND = Color(0xFFEEF3FA)
+
+/** The on-screen piano with octave buttons. */
+@Composable
+private fun PianoBar(onKey: (Int) -> Unit) {
+    var low by remember { mutableIntStateOf(60) }
+    Row(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = { low = (low - 12).coerceAtLeast(24) }) { Text("◀") }
+        Piano(low, octaves = 2, onKey = onKey, modifier = Modifier.weight(1f).height(72.dp))
+        TextButton(onClick = { low = (low + 12).coerceAtMost(84) }) { Text("▶") }
+    }
+}
+
+/** A piano keyboard from [low] (a C) over [octaves] octaves and one more C; taps give MIDI keys. */
+@Composable
+private fun Piano(low: Int, octaves: Int, onKey: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val whiteSteps = intArrayOf(0, 2, 4, 5, 7, 9, 11)
+    val whites = octaves * 7 + 1
+    fun whiteKey(i: Int) = low + 12 * (i / 7) + whiteSteps[i % 7]
+    fun hasBlackAfter(i: Int) = i < whites - 1 && i % 7 !in intArrayOf(2, 6)
+    Canvas(
+        modifier.pointerInput(low) {
+            detectTapGestures { p ->
+                val w = size.width.toFloat() / whites
+                val i = (p.x / w).toInt().coerceIn(0, whites - 1)
+                val key = if (p.y < size.height * 0.6f) {
+                    val frac = p.x / w - i
+                    when {
+                        frac > 0.7f && hasBlackAfter(i) -> whiteKey(i) + 1
+                        frac < 0.3f && i > 0 && hasBlackAfter(i - 1) -> whiteKey(i - 1) + 1
+                        else -> whiteKey(i)
+                    }
+                } else whiteKey(i)
+                onKey(key)
+            }
+        },
+    ) {
+        val w = size.width / whites
+        for (i in 0 until whites) {
+            drawRect(if (whiteKey(i) == 60) Color(0xFFFFF4D6) else Color.White, Offset(i * w, 0f), Size(w, size.height))
+            drawRect(Color.Gray, Offset(i * w, 0f), Size(w, size.height), style = Stroke(1f))
+        }
+        for (i in 0 until whites) if (hasBlackAfter(i)) {
+            drawRect(Color.Black, Offset((i + 0.7f) * w, 0f), Size(0.6f * w, size.height * 0.6f))
+        }
+    }
 }
 
 /** Pitch, duration and delete buttons for the selected note (or rest). */

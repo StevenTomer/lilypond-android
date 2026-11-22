@@ -103,8 +103,17 @@ This plan covers the pieces needed before the editor and the editor phases after
   - rel2abs handles the `\\` case exactly as LilyPond does. Transposition keeps
     formatting and changes the key signature.
   - Cost: about +20 MB per ABI.
-- **M5:** the harness has a MIDI tab (device list, notes and chords as LilyPond, delivery
-  delay, test chord to the keyboard), waiting for the DGX-670 test.
+- **M5:**
+  - The `:midi` module has `MidiKeyboard` (hot-plug, connects to the first device,
+    events on the main thread, output to the keyboard), a running-status `MidiParser`
+    and `ChordCollector` (keys held together form one chord, closed when all are up).
+  - Step entry (0.8.0): the Score tab's Enter notes mode writes notes and chords from
+    the keyboard, or from an on-screen piano, after the selected note.
+    `lilyedit.insert` spells them for the key at that point (`spell`: twelve fifths
+    around the key signature, shifted for minor) and sets octave marks so they sound
+    as played in `\relative` and absolute music, and in either voice of `\\`.
+  - Still to do: the hands-on test with the DGX-670, and a virtual MIDI device for
+    instrumented tests.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

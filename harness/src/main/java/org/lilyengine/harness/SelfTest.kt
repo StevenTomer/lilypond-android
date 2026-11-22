@@ -107,6 +107,18 @@ class SelfTest(private val engine: LilyPondEngine, private val tools: LilyTools)
             require(out.contains("{ a,2 g }")) { out }
             "\"c,2 g'\" became \"${e.replacement}\" (Python ready after $startup ms)"
         }
+        check("Note entry: MIDI key 61 into voice 2, in G major") {
+            // As if C sharp were played on a MIDI keyboard with voice 2's g' selected:
+            // the key signature makes it cis (not des), written "cis," after g'.
+            val src = POLY_SAMPLE
+            val r = tools.insert(src, src.indexOf("g' }"), listOf(61), "4", after = true)
+            val out = r.edit.applyTo(src)
+            require(out.contains("{ c,2 g' cis,4 }")) { out }
+            val notes = engine.render(out, LilyPondEngine.Options(scoreMap = true)).also(::requireOk)
+                .scoreMap!!.grobs.filter { it.type == "NoteHead" && it.voiceId == "2" }.sortedBy { it.momentValue }.map { it.pitch!!.name }
+            require(notes == listOf("c'", "g'", "cis'")) { notes.toString() }
+            "voice 2 now sounds ${notes.joinToString(" ")}"
+        }
         check("MIDI import with midi2ly (embedded Python)") {
             val r = engine.render(POLY_SAMPLE)
             requireOk(r)

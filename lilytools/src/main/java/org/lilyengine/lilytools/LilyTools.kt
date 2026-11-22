@@ -79,6 +79,32 @@ class LilyTools(context: Context) {
             .put("end", if (end < 0) -1 else text.codePointCount(0, end)),
     )
 
+    /** The result of [insert]: the edit, and where the new item starts in the edited text. */
+    data class Inserted(val edit: TextEdit, val start: Int)
+
+    /**
+     * Note entry: inserts a note (one MIDI key in [keys], 60 = middle C), a
+     * chord (several keys) or a rest (none) at [offset], with [duration]
+     * (e.g. "8."; null keeps the current one). With [after], [offset] is on
+     * a note, chord or rest and the new one goes after it; otherwise an
+     * [offset] inside an item also means after it. Pitches are spelled for
+     * the key in effect there (61 is cis in G major, des in F major) and get
+     * the octave marks that make them sound as played, in \relative music
+     * too, and in either voice of `<< { } \\ { } >>`.
+     */
+    suspend fun insert(text: String, offset: Int, keys: List<Int>, duration: String? = null, after: Boolean = false): Inserted =
+        withContext(dispatcher) {
+            val request = JSONObject().put("op", "insert").put("text", text)
+                .put("pos", text.codePointCount(0, offset))
+                .put("keys", org.json.JSONArray(keys))
+                .put("after", after)
+            duration?.let { request.put("duration", it) }
+            val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+            if (reply.has("error")) throw EditException(reply.getString("error"))
+            val result = reply.getString("text")
+            Inserted(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")))
+        }
+
     suspend fun relativeToAbsolute(text: String): TextEdit = call(text, JSONObject().put("op", "rel2abs"))
 
     /** How midi2ly reads a MIDI file. */

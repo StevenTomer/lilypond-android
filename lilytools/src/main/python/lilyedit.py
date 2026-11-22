@@ -289,6 +289,20 @@ def set_duration(text, pos, duration):
     return text
 
 
+def _item_end(text, it):
+    """The end of an item with what is attached to it (articulations,
+    dynamics, slurs, ties): up to the next space."""
+    end = it.end
+    while end < len(text) and not text[end].isspace() and text[end] not in "}>|":
+        end += 1
+    return end
+
+
+def _item_start(text, it):
+    """Where an item starts: a chord's item is at its '>'."""
+    return text.rfind("<", 0, it.pos) if text[it.pos] == ">" else it.pos
+
+
 def delete(text, pos):
     """Removes the note, chord or rest at `pos` (with its duration and any
     articulations attached to it), keeping the rest of the music the same:
@@ -312,10 +326,7 @@ def delete(text, pos):
         removed = [i]
     else:
         start = text.rfind("<", 0, it.pos) if text[it.pos] == ">" else it.pos
-        end = it.end
-        # attached articulations, dynamics, slurs, ties: up to the next space
-        while end < len(text) and not text[end].isspace() and text[end] not in "}>|":
-            end += 1
+        end = _item_end(text, it)
         removed = [j for j, n in enumerate(before) if start <= n.pos < end]
         # the following item inherits our duration if it had none
         if k + 1 < len(items):
@@ -328,6 +339,95 @@ def delete(text, pos):
     desired = [n.key() for j, n in enumerate(before) if j not in removed]
     text = text[:start] + text[end:]
     return _fix_octaves(text, desired)
+
+
+# --------------------------------------------------------------------------
+# Note entry (from a MIDI keyboard or an on-screen piano)
+
+# Positions on the line of fifths (C = 0, G = 1, F = -1) of the natural notes.
+_FIFTHS_OF_STEP = [0, 2, 4, -1, 1, 3, 5]  # c d e f g a b
+_STEP_OF_FIFTHS = {f: s for s, f in enumerate(_FIFTHS_OF_STEP)}
+# How many fifths each mode's tonic is above the major key with the same
+# signature (A minor: three above C).
+_MODE_FIFTHS = {"major": 0, "ionian": 0, "minor": 3, "aeolian": 3, "dorian": 2,
+                "phrygian": 4, "lydian": -1, "mixolydian": 1, "locrian": 5}
+
+
+def key_fifths(key):
+    """A key's signature as a number of sharps (negative: flats)."""
+    tonic, alter, mode = key
+    return _FIFTHS_OF_STEP[tonic] + int(round(alter * 2)) * 7 - _MODE_FIFTHS[mode]
+
+
+def spell(midi_key, key):
+    """The (note, alter, octave) to write for a MIDI key number in `key`
+    (as key_at gives it): the notes of the scale as the signature has them,
+    the others as the nearest accidentals around the key, e.g. 61 is cis in
+    G major and des in F major; in minor keys the raised leading tone
+    (gis in A minor). MIDI 60 is c' (octave 1)."""
+    fifths = key_fifths(key)
+    # Twelve consecutive fifths around the key: in C major, as es bes f c
+    # g d a e b fis cis; minor keys shift by one so they get the leading tone.
+    low = fifths - (3 if key[2] in ("minor", "aeolian") else 4)
+    pc = midi_key % 12
+    p = next(p for p in range(low, low + 12) if (7 * p) % 12 == pc)
+    sharps = (p + 1) // 7
+    note = _STEP_OF_FIFTHS[p - 7 * sharps]
+    octave = (midi_key - _NATURAL[note] - sharps) // 12 - 4
+    return note, Fraction(sharps, 2), octave
+
+
+def insert(text, pos, keys, duration=None, after=False):
+    """Inserts a note (one MIDI key in `keys`), a chord (several) or a rest
+    (none) at `pos`, with `duration` (e.g. "8."; None: the current one).
+    With `after`, `pos` is on an item (note, chord, rest) and the new one
+    goes after it, past its articulations and ties; otherwise a `pos`
+    inside an item means after it. Pitches are spelled for the key at that
+    point and given octave marks that make them sound at the keys' pitch,
+    in \\relative music too; the music after keeps its pitches and
+    durations. Returns (text, start of the new item)."""
+    items = _items(text)
+    before = notes(text)
+    if after:
+        pos = _item_end(text, items[_item_index(text, items, pos)][0])
+    else:
+        for it, _, _ in items:
+            if _item_start(text, it) < pos < it.end:
+                pos = _item_end(text, it)
+                break
+    previous = [eff for it, _, eff in items if it.pos < pos]
+    current = previous[-1] if previous else "4"
+    following = [(it, w, eff) for it, w, eff in items if it.pos >= pos]
+    write = duration if duration and (duration != current or not previous) else ""
+    new_current = duration or current
+
+    key = key_at(text, pos)
+    spelled = [spell(k, key) for k in sorted(set(keys))]
+    name = _language_writer(text)
+    names = [name(n, a) for n, a, _ in spelled]
+    if not names:
+        item = "r"
+    elif len(names) == 1:
+        item = names[0]
+    else:
+        item = "<" + " ".join(names) + ">"
+    item += write
+
+    edits = []
+    if following:
+        nxt, nxt_written, nxt_effective = following[0]
+        if nxt_written is None and nxt_effective != new_current:
+            edits.append((nxt.insert_pos, nxt_effective))
+    pre = "" if pos == 0 or text[pos - 1].isspace() else " "
+    post = "" if pos >= len(text) or text[pos].isspace() else " "
+    edits.append((pos, pre + item + post))
+    for at, s in sorted(edits, reverse=True):
+        text = text[:at] + s + text[at:]
+
+    desired = ([n.key() for n in before if n.pos < pos]
+               + [(n, a, o) for n, a, o in spelled]
+               + [n.key() for n in before if n.pos >= pos])
+    return _fix_octaves(text, desired), pos + len(pre)
 
 
 # --------------------------------------------------------------------------
@@ -349,6 +449,10 @@ def call(request_json):
             out = delete(text, req["pos"])
         elif op == "transpose":
             out = transpose(text, req.get("start", 0), req.get("end", -1), req["from"], req["to"])
+        elif op == "insert":
+            out, start = insert(text, req["pos"], req.get("keys", []), req.get("duration"),
+                                req.get("after", False))
+            return json.dumps({"text": out, "start": start})
         elif op == "rel2abs":
             out = rel2abs(text)
         elif op == "notes":

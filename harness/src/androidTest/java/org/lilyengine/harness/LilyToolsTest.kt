@@ -74,6 +74,22 @@ class LilyToolsTest {
     }
 
     @Test
+    fun stepEntryIntoEachVoiceSoundsAsPlayed() = runBlocking {
+        val before = heads(POLY_SAMPLE)
+        // Voice 2 (c,2 g'): MIDI 61 after the g', in G major: cis', not des'.
+        val one = tools.insert(POLY_SAMPLE, POLY_SAMPLE.indexOf("g' }"), listOf(61), "4", after = true)
+        val src = one.edit.applyTo(POLY_SAMPLE)
+        assertTrue(src.substring(one.start), src.startsWith("cis", one.start))
+        // Voice 1: a C major chord an octave down after the last e''.
+        val e = src.indexOf("e }")
+        val two = tools.insert(src, e, listOf(48, 52, 55), "4", after = true)
+        val after = heads(two.edit.applyTo(src))
+        assertEquals(listOf("c''", "e''", "g''", "e''", "c", "e", "g"), after["1"])
+        assertEquals(listOf("c'", "g'", "cis'"), after["2"])
+        assertEquals(before[""], after[""])
+    }
+
+    @Test
     fun errorsComeBackAsExceptions() = runBlocking {
         try {
             tools.setPitch("{ c'4 }", 0, LilyTools.Pitch(0, 0, 0))

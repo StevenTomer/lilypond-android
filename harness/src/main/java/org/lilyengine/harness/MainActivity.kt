@@ -46,19 +46,34 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.lilyengine.engine.LilyPondEngine
 import org.lilyengine.lilytools.LilyTools
+import org.lilyengine.midi.MidiKeyboard
 import java.io.File
 
 /** Throwaway test shell for the engine: edit, render, view page 1, read the log. */
 class MainActivity : ComponentActivity() {
+    /** One MIDI keyboard connection for all tabs, open while the app is in front. */
+    private lateinit var keyboard: MidiKeyboard
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val engine = LilyPondEngine(this)
-        setContent { MaterialTheme { Root(engine) } }
+        keyboard = MidiKeyboard(this)
+        setContent { MaterialTheme { Root(engine, keyboard) } }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        keyboard.start()
+    }
+
+    override fun onStop() {
+        keyboard.stop()
+        super.onStop()
     }
 }
 
 @Composable
-private fun Root(engine: LilyPondEngine) {
+private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("Test", "Score", "Benchmark", "MIDI")
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -70,9 +85,9 @@ private fun Root(engine: LilyPondEngine) {
         Box(Modifier.weight(1f)) {
             when (tab) {
                 0 -> Harness(engine)
-                1 -> ScoreScreen(engine)
+                1 -> ScoreScreen(engine, keyboard)
                 2 -> BenchmarkScreen(engine)
-                else -> MidiScreen()
+                else -> MidiScreen(keyboard)
             }
         }
     }

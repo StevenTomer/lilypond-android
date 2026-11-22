@@ -14,8 +14,8 @@ android {
         applicationId = "org.lilyengine.harness"
         minSdk = 28
         targetSdk = 37
-        versionCode = 9
-        versionName = "0.7.0"
+        versionCode = 10
+        versionName = "0.8.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // LilyPond is only built for these (64-bit only: Guile bytecode is
         // compiled for 64-bit little-endian).
@@ -65,6 +65,7 @@ dependencies {
     implementation(project(":engine"))
     implementation(project(":scoreview"))
     implementation(project(":lilytools"))
+    implementation(project(":midi"))
     implementation(platform(libs.compose.bom))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
