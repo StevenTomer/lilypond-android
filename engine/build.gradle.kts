@@ -30,4 +30,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.xz)
     testImplementation(libs.junit)
+    testImplementation(libs.org.json) // Android's org.json is a stub in local unit tests
 }

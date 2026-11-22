@@ -180,6 +180,20 @@ internal class RuntimeInstaller(private val context: Context) {
 
     fun executable(root: File): File = File(root, "bin/lilypond")
 
+    /**
+     * The engine's own LilyPond settings files (the .ly files in assets/lilyengine:
+     * MIDI for every score, the score map), copied to filesDir/lilyengine.
+     * They ship with the engine rather than the runtime archive, so they
+     * are refreshed whenever their content changes.
+     */
+    fun settingsFile(name: String): File {
+        val dir = File(context.filesDir, "lilyengine").apply { mkdirs() }
+        val out = File(dir, name)
+        val bytes = context.assets.open("lilyengine/$name").use { it.readBytes() }
+        if (!out.exists() || !out.readBytes().contentEquals(bytes)) out.writeBytes(bytes)
+        return out
+    }
+
     companion object {
         const val RUNTIME_ASSET = "lilypond-runtime.tar.xz"
         const val VERSION_ASSET = "lilypond-runtime.version"

@@ -32,6 +32,25 @@ global state, calls `exit()`, and Guile's GC owns the whole process.
   LilyPond derives its data prefix from `argv[0]`, so upstream's own relocation files
   then set up Guile, Fontconfig and `PATH`.
 
+## Engine API (`LilyPondEngine`)
+
+- `render(source, Options)` and `renderFile(file, Options)`. `renderFile` renders in place,
+  so `\include` works; output goes to a cache job directory.
+- **MIDI for every score** (`Options.midi`, on by default): `assets/lilyengine/midi.ly`
+  adds a `\midi` block to every score that lacks one. The user's file is not changed.
+- **Score map** (`Options.scoreMap`, PDF only): `assets/lilyengine/scoremap.ly` writes JSON
+  with every printed note head, rest, stem, articulation, bar line, staff symbol, etc.:
+  - its page box, exact to LilyPond's own PDF links
+  - its source location
+  - its Voice and Staff (each `\\` voice is distinct)
+  - its musical moment
+  - pitch, duration and staff position, for notes
+
+  `ScoreMap` parses it, converts boxes to PDF points and does hit-testing. Both settings
+  files are plain LilyPond/Scheme loaded with `-dinclude-settings`; LilyPond itself is not
+  patched.
+- **Cancellation:** cancelling the calling coroutine kills the LilyPond process at once.
+
 ## Building
 
 Requirements:

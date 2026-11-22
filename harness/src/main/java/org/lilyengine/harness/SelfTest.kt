@@ -1,5 +1,6 @@
 package org.lilyengine.harness
 
+import android.media.MediaPlayer
 import android.os.Build
 import org.lilyengine.engine.Diagnostic
 import org.lilyengine.engine.LilyPondEngine
@@ -66,6 +67,32 @@ class SelfTest(private val engine: LilyPondEngine) {
             val err = r.diagnostics.firstOrNull { it.severity == Diagnostic.Severity.ERROR }
             require(err != null && err.line == 2) { "Expected an error on line 2.\n${r.log}" }
             "LilyPond reported, as expected: line ${err.line}, column ${err.column}: ${err.message}"
+        }
+        check("MIDI for a score without \\midi, and playback") {
+            val r = engine.render(SAMPLE)
+            requireOk(r)
+            val midi = r.midi.singleOrNull() ?: error("No MIDI file was written")
+            val player = MediaPlayer()
+            try {
+                player.setDataSource(midi.path)
+                player.prepare()
+                require(player.duration > 0) { "MediaPlayer reports no duration" }
+                "${midi.length()} bytes, plays for ${player.duration / 1000.0} s"
+            } finally {
+                player.release()
+            }
+        }
+        check("Score map: two voices on one staff") {
+            val r = engine.render(POLY_SAMPLE)
+            requireOk(r)
+            val map = r.scoreMap ?: error("No score map was written")
+            val heads = map.grobs.filter { it.type == "NoteHead" }
+            val v1 = heads.filter { it.voiceId == "1" }.sortedBy { it.momentValue }.map { it.pitch?.name }
+            val v2 = heads.filter { it.voiceId == "2" }.sortedBy { it.momentValue }.map { it.pitch?.name }
+            require(v1 == listOf("c''", "e''", "g''", "e''") && v2 == listOf("c'", "g'")) {
+                "voice 1: $v1, voice 2: $v2"
+            }
+            "voice 1: ${v1.joinToString(" ")}; voice 2: ${v2.joinToString(" ")}; ${map.grobs.size} objects"
         }
         return results
     }
