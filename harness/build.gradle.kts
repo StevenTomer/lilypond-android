@@ -11,11 +11,13 @@ android {
         version = release(37) { minorApiLevel = 2 }
     }
     defaultConfig {
-        applicationId = "org.lilyengine.harness"
+        // The app's permanent id (AndroLily). The Kotlin packages keep their
+        // org.lilyengine names: they are internal and can be renamed any time.
+        applicationId = "org.androlily"
         minSdk = 28
         targetSdk = 37
-        versionCode = 22
-        versionName = "0.19.0"
+        versionCode = 23
+        versionName = "0.20.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // LilyPond is only built for these (64-bit only: Guile bytecode is
         // compiled for 64-bit little-endian).

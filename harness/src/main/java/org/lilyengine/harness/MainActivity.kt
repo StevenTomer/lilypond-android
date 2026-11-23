@@ -140,7 +140,7 @@ private fun Harness(engine: LilyPondEngine) {
                 }
             }) { Text("Self-test") }
             report?.let { text ->
-                Button(onClick = { shareText(context, "LilyPond engine self-test", text) }) { Text("Share") }
+                Button(onClick = { shareText(context, "AndroLily self-test", text) }) { Text("Share") }
             }
         }
         BasicTextField(

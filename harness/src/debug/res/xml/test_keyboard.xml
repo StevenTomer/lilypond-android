@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <devices>
-    <device manufacturer="LilyPond Test" product="Test keyboard">
+    <device manufacturer="AndroLily tests" product="Test keyboard">
         <input-port name="to keyboard" />
         <output-port name="from keyboard" />
     </device>

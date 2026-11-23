@@ -67,7 +67,7 @@ fun MidiScreen(keyboard: MidiKeyboard) {
         onDispose { keyboard.removeListener(listener) }
     }
     fun report() = buildString {
-        appendLine("LilyPond MIDI test")
+        appendLine("AndroLily MIDI test")
         append(SelfTest.deviceInfo())
         appendLine("Device: ${connected?.let(MidiKeyboard::name) ?: "none"}")
         appendLine("Notes received: ${latencies.size}")
@@ -99,8 +99,8 @@ fun MidiScreen(keyboard: MidiKeyboard) {
             if (devices.isEmpty()) Text("No MIDI devices found.", modifier = Modifier.padding(8.dp))
         }
         Text(
-            "Other MIDI apps on this tablet see LilyPond as a MIDI device named \"LilyPond\": what they " +
-                "play into it is taken like a keyboard, and what LilyPond plays comes out of it. " +
+            "Other MIDI apps on this tablet see AndroLily as a MIDI device named \"AndroLily\": what they " +
+                "play into it is taken like a keyboard, and what AndroLily plays comes out of it. " +
                 when (appsListening) {
                     0 -> "No app is listening now."
                     1 -> "1 app is listening now, so Play in the Score tab can sound there."
@@ -114,7 +114,7 @@ fun MidiScreen(keyboard: MidiKeyboard) {
                 add("→ sent C major chord" + listOfNotNull(" to the keyboard".takeIf { canSend }, " to the apps listening".takeIf { appsListening > 0 }).joinToString(" and"))
             }) { Text("Play C major") }
             Button(onClick = { log.clear(); latencies.clear() }) { Text("Clear") }
-            Button(onClick = { shareText(context, "LilyPond MIDI test", report()) }) { Text("Share") }
+            Button(onClick = { shareText(context, "AndroLily MIDI test", report()) }) { Text("Share") }
         }
         Text(status, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
         Text(

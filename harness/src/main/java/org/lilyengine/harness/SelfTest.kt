@@ -160,7 +160,7 @@ class SelfTest(private val context: android.content.Context, private val engine:
         }
 
         fun report(checks: List<Check>): String = buildString {
-            appendLine("LilyPond engine self-test")
+            appendLine("AndroLily self-test")
             append(deviceInfo())
             val passed = checks.count { it.passed }
             appendLine("Result: $passed of ${checks.size} passed")

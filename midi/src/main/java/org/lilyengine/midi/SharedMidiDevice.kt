@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * The app as a MIDI device named "LilyPond" that other MIDI apps on the
+ * The app as a MIDI device named "AndroLily" that other MIDI apps on the
  * tablet can see:
  * - What they send to its input ("notes in") is played into LilyPond like a
  *   keyboard: [MidiKeyboard] passes it to its listeners, so note entry and the
@@ -60,7 +60,7 @@ class SharedMidiDevice : MidiDeviceService() {
         }
 
         /** As in res/xml/lilypond_midi_device.xml. */
-        const val NAME = "LilyPond"
+        const val NAME = "AndroLily"
 
         /** Whether [info] is this device (going by its names, as Android doesn't say which app a device is from). */
         fun isIt(info: MidiDeviceInfo): Boolean =

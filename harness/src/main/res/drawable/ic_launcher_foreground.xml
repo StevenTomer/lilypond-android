@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AndroLily: an eighth note, inside the adaptive icon's 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- note head, tilted as engraved -->
+    <group android:pivotX="47" android:pivotY="70" android:rotation="-22">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M36,70 a11,7.5 0 1,0 22,0 a11,7.5 0 1,0 -22,0 z" />
+    </group>
+    <!-- stem -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M55,32 h3.2 v37 h-3.2 z" />
+    <!-- flag -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M58.2,32 c0,9 13,11 13,22 c0,5 -2,9 -4.5,11.5 c1.5,-7 -2.5,-13.5 -8.5,-15.5 z" />
+</vector>

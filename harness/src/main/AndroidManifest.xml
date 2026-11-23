@@ -3,7 +3,9 @@
     <!-- MIDI keyboard input (USB / Bluetooth); the app works without it. -->
     <uses-feature android:name="android.software.midi" android:required="false" />
     <application
-        android:label="LilyPond Test"
+        android:label="AndroLily"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <!-- Rotating, folding or attaching a keyboard resizes the screen instead of
              recreating the activity, which would lose the score being edited,

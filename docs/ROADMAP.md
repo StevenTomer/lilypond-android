@@ -30,7 +30,7 @@ This plan covers the pieces needed before the editor and the editor phases after
 - **M0:**
   - CI is green: native build in 47 min uncached, app, emulator tests on API 30 and 35.
   - The update test passed: 2.27.5 built and passed all tests with no source changes.
-  - Still open: the app name and package id.
+  - The app name and package id: AndroLily, `org.androlily` (0.20.0).
 - **M1 (engine):**
   - Done: MIDI for every score, the score map (voices, chords, page boxes exact to
     LilyPond's PDF links), `renderFile` with includes, cancellation.
@@ -313,6 +313,22 @@ This plan covers the pieces needed before the editor and the editor phases after
   - Tests: 7 Python tests, plus an instrumented test of chord entry in voice 2, on
     the chord after the `<< >>`, and a respelling, against LilyPond's engraving. The
     file menu was checked on the emulator: save as, save, new, open, share.
+
+- **0.20.0, AndroLily:**
+  - The app is now AndroLily, with the permanent id `org.androlily` (the Kotlin
+    packages keep their `org.lilyengine` names, which are internal). It has an
+    adaptive icon (an eighth note), and other MIDI apps see its device as
+    "AndroLily". Downloads are named `androlily-<version>-arm64.apk`.
+  - Since the id changed, it installs beside the old "LilyPond Test" instead of over
+    it: save the score to a file first, then uninstall the test app.
+  - Also in this version: syntax colours in the source editor (`LilyHighlight`), and
+    a Transpose dialog for the selection or the whole score. Part of a `\relative`
+    passage is transposed with the music after it kept sounding the same.
+- **Next: lyric entry** (asked for). A Lyrics mode: select the first note of a
+  melody and type; Space moves on, `-` splits a word (` -- `), `_` holds a syllable
+  (` __ `). It writes `\addlyrics` after a melody without lyrics, or edits an existing
+  `\lyricsto` in place, and works per voice. Tapping a sung word edits it, and a
+  check counts syllables against notes.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

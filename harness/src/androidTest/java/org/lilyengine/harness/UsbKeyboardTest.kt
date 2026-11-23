@@ -37,9 +37,18 @@ class UsbKeyboardTest {
     private lateinit var keyboard: MidiKeyboard
     private val events = LinkedBlockingQueue<MidiKeyboard.Event>()
 
+    /** When Android last added or removed a MIDI device (System.nanoTime). */
+    @Volatile private var lastDeviceChange = System.nanoTime()
+    private val deviceWatch = object : MidiManager.DeviceCallback() {
+        override fun onDeviceAdded(device: MidiDeviceInfo) { lastDeviceChange = System.nanoTime() }
+        override fun onDeviceRemoved(device: MidiDeviceInfo) { lastDeviceChange = System.nanoTime() }
+    }
+
     @Before
     fun plugIn() {
-        assumeTrue("no MIDI on this device", context.getSystemService(Context.MIDI_SERVICE) is MidiManager)
+        val manager = context.getSystemService(Context.MIDI_SERVICE) as MidiManager?
+        assumeTrue("no MIDI on this device", manager != null)
+        manager!!.registerDeviceCallback(deviceWatch, android.os.Handler(android.os.Looper.getMainLooper()))
         keyboard = MidiKeyboard(context)
         keyboard.addListener { events += it }
         TestKeyboardService.plugIn(context, true)
@@ -52,6 +61,7 @@ class UsbKeyboardTest {
         if (!::keyboard.isInitialized) return
         keyboard.stop()
         TestKeyboardService.plugIn(context, false)
+        (context.getSystemService(Context.MIDI_SERVICE) as MidiManager).unregisterDeviceCallback(deviceWatch)
     }
 
     @Test
@@ -136,9 +146,9 @@ class UsbKeyboardTest {
     @Test
     fun unplugAndReplug() {
         TestKeyboardService.plugIn(context, false)
-        waitFor("unplugged") { keyboard.connected.value == null }
-        assertTrue(keyboard.devices.value.none(::isTestKeyboard))
-        // LilyPond's own device is never offered as a keyboard.
+        // Gone from the list too (a late re-listing can show it once more first).
+        waitFor("unplugged") { keyboard.connected.value == null && keyboard.devices.value.none(::isTestKeyboard) }
+        // The app's own device is never offered as a keyboard.
         assertTrue(keyboard.devices.value.none(SharedMidiDevice::isIt))
         TestKeyboardService.plugIn(context, true)
         awaitConnected()
@@ -151,6 +161,10 @@ class UsbKeyboardTest {
     private fun isTestKeyboard(info: MidiDeviceInfo) = MidiKeyboard.name(info).contains(TestKeyboardService.PRODUCT)
 
     private fun awaitConnected() {
+        // Turning the service on or off (plugging in and out) makes Android re-list all
+        // of the app's MIDI devices a little later, briefly disconnecting them: wait until
+        // the list has been quiet for two seconds, then for the keyboard.
+        waitFor("the MIDI devices to settle") { System.nanoTime() - lastDeviceChange > QUIET_NANOS }
         waitFor("the test keyboard to connect") {
             keyboard.connected.value?.let(::isTestKeyboard) == true && keyboard.canSend.value
         }
@@ -172,5 +186,8 @@ class UsbKeyboardTest {
         }
     }
 
-    private companion object { const val TAG = "UsbKeyboardTest" }
+    private companion object {
+        const val TAG = "UsbKeyboardTest"
+        const val QUIET_NANOS = 2_000_000_000L
+    }
 }
