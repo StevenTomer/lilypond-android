@@ -30,6 +30,13 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -69,6 +76,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
@@ -647,7 +656,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     fun spanRange(kind: String) {
         val r = renderedText
         val pairs = selection.filter { (it.type == "NoteHead" || it.type == "Rest") && it.origin != null }
-            .groupBy { it.voiceId.orEmpty() }
+            .groupBy { it.voice to it.voiceId } // each voice context: unnamed voices on two staves are two voices
             .mapNotNull { (_, gs) ->
                 val offs = gs.map { SourcePositions.offsetOf(r, it.origin!!.line, it.origin!!.char) }
                 (offs.min() to offs.max()).takeIf { it.first != it.second }
@@ -695,8 +704,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             busy = true
             try {
                 val before = text.text
-                val selected = selectedOffset?.takeIf { it < before.length }
+                val placed = (entry as? Entry.Step)?.target?.takeIf { it < before.length }
+                val selected = placed ?: selectedOffset?.takeIf { it < before.length }
                 val at = selected ?: text.selection.start
+                val afterIt = if (placed != null) (entry as Entry.Step).after else selected != null
                 val duration = entryDuration + if (entryDot) "." else ""
                 val toChord = chordMode && selected != null
                 val r = when {
@@ -704,7 +715,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     entry is Entry.Keys -> tools.insert(before, at, entry.keys, duration, after = selected != null, fill = fillRests)
                     entry is Entry.Step && toChord -> tools.addStepToChord(before, at, entry.step, entry.octave)
                         .also { keyboard.play(it.keys, 300) }
-                    entry is Entry.Step -> tools.insertStep(before, at, entry.step, entry.octave, duration, after = selected != null, fill = fillRests)
+                    entry is Entry.Step -> tools.insertStep(before, at, entry.step, entry.octave, duration, after = afterIt, fill = fillRests)
                         .also { keyboard.play(it.keys, 300) } // the note tapped on the staff, as entered
                     else -> error("unreachable")
                 }
@@ -774,6 +785,37 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 text = TextFieldValue(after, TextRange(r.start, r.end))
             } catch (ex: LilyTools.EditException) {
                 status = "Can't paste here: ${ex.message}"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    /**
+     * Runs an edit of one voice's notes for each voice in the selection, the
+     * later music first (so the earlier offsets stay valid), as one undo step.
+     */
+    fun perVoice(offsets: List<Int>, action: suspend (source: String, offsets: List<Int>) -> TextEdit) {
+        if (busy || text.text != renderedText) return
+        val src0 = text.text
+        val groups = selection.filter { (it.type == "NoteHead" || it.type == "Rest") && it.origin != null }
+            .groupBy { it.voice to it.voiceId }
+            .map { (_, gs) -> gs.map { SourcePositions.offsetOf(src0, it.origin!!.line, it.origin!!.char) }.distinct().filter { it in offsets || range.isEmpty() } }
+            .filter { it.isNotEmpty() }
+            .ifEmpty { listOf(offsets) }
+        busy = true
+        scope.launch {
+            try {
+                var t = src0
+                for (g in groups.sortedByDescending { it.max() }) t = action(t, g).applyTo(t)
+                if (t != src0) {
+                    undo.addLast(src0)
+                    selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = t to it }
+                    range = emptyList(); selectedOffset = null
+                    text = TextFieldValue(t)
+                }
+            } catch (ex: LilyTools.EditException) {
+                status = "Can't do that here: ${ex.message}"
             } finally {
                 busy = false
             }
@@ -883,9 +925,11 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     is Insertion.Change -> edit(if (what.after) offsets.max() else offsets.min()) { src, off ->
                         tools.change(src, off, what.kind, what.written, what.after)
                     }
-                    is Insertion.Words -> edit(offsets.min()) { src, off -> tools.addText(src, off, what.words, what.above) }
-                    is Insertion.Repeat -> edit(offsets.min()) { src, _ -> tools.repeat(src, offsets, what.times) }
-                    is Insertion.Wrap -> edit(offsets.min()) { src, _ -> tools.wrap(src, offsets, what.before, what.after) }
+                    is Insertion.Words -> edit(offsets.min()) { src, off -> tools.addText(src, off, what.words, what.above, what.bold, what.italic) }
+                    // These take one voice at a time: a selection over several voices is done voice by voice.
+                    is Insertion.Repeat -> perVoice(offsets) { src, o -> tools.repeat(src, o, what.times) }
+                    is Insertion.Wrap -> perVoice(offsets) { src, o -> tools.wrap(src, o, what.before, what.after) }
+                    is Insertion.Ending -> perVoice(offsets) { src, o -> if (what.first) tools.firstEnding(src, o) else tools.nextEnding(src, o) }
                 }
                 range = emptyList()
             },
@@ -962,6 +1006,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 ) {
+                    // Always at hand, whatever mode the bars below are in.
+                    IconTool(Glyphs.Undo, "Undo", undo.isNotEmpty(), ::undoLast)
+                    IconTool(Glyphs.Redo, "Redo", undo.canRedo, ::redoLast)
                     Box {
                         TextButton(onClick = { fileMenu = true }) {
                             Text((file.name ?: "Untitled") + (if (modified) " •" else "") + " ▾", maxLines = 1)
@@ -1092,9 +1139,6 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     onVoice = { g -> onTap(g) },
                     duration = entryDuration,
                     dot = entryDot,
-                    keyboardName = connectedKeyboard?.let(MidiKeyboard::name),
-                    hasPlace = selectedOffset != null,
-                    canUndo = undo.isNotEmpty(),
                     onDuration = { entryDuration = it },
                     onDot = { entryDot = !entryDot },
                     onRest = { entries.trySend(Entry.Keys(emptyList())) },
@@ -1116,9 +1160,6 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         else if (selectedOffset == null) status = "Select the note to record after."
                         else recorder = Recorder(keyboard, recordBpm).also { it.start(scope) }
                     },
-                    onUndo = ::undoLast,
-                    canRedo = undo.canRedo,
-                    onRedo = ::redoLast,
                 ) else {
                     val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
                         ?.takeIf { text.text == renderedText }
@@ -1127,7 +1168,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     EditBar(
                         enabled = selected != null,
                         pitched = if (inRange) selection.any { it.type == "NoteHead" } else pitch != null,
-                        canUndo = undo.isNotEmpty(),
+                        current = if (inRange) null else selected?.duration,
                         onStep = { by ->
                             if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Step(by)) }
                             else edit { src, off -> tools.step(src, off, by) }
@@ -1170,9 +1211,6 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             range = emptyList()
                             edit { src, off -> tools.removeVoice(src, off) }
                         },
-                        onUndo = ::undoLast,
-                        canRedo = undo.canRedo,
-                        onRedo = ::redoLast,
                     )
                     MarksBar(
                         enabled = selected != null,
@@ -1189,7 +1227,13 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 ScoreView(
                     document, lookup, if (playback != null) cursor else selection, ::onTap,
                     onSelectRange = ::onSelectRange,
-                    onStaffTap = if (entering) { p -> entries.trySend(Entry.Step(p.step, p.octave)) } else null,
+                    onStaffTap = if (entering) { p ->
+                        // Where the tap is decides where the note goes (not the selection).
+                        val selectedGrob = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
+                        val place = if (text.text == renderedText) lookup?.entryPlace(p, selectedGrob) else null
+                        val target = place?.item?.origin?.let { SourcePositions.offsetOf(text.text, it.line, it.char) }
+                        entries.trySend(Entry.Step(p.step, p.octave, target, place?.after ?: true))
+                    } else null,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
                     state = viewState,
                     onDragSteps = { g, steps ->
@@ -1242,7 +1286,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
 private sealed interface Entry {
     data class Keys(val keys: List<Int>) : Entry
     /** [step] 0 = c … 6 = b, [octave] 0 = from middle C up; the key signature gives the accidental. */
-    data class Step(val step: Int, val octave: Int) : Entry
+    data class Step(val step: Int, val octave: Int, val target: Int? = null, val after: Boolean = true) : Entry
 }
 
 /**
@@ -1373,10 +1417,12 @@ private fun SettingsDialog(initial: LilyTools.ScoreSettings, onDismiss: () -> Un
 private sealed interface Insertion {
     /** A clef, key, time, tempo or bar line ([kind]) written as [written]. */
     data class Change(val kind: String, val written: String, val after: Boolean = false) : Insertion
-    data class Words(val words: String, val above: Boolean) : Insertion
+    data class Words(val words: String, val above: Boolean, val bold: Boolean = false, val italic: Boolean = false) : Insertion
     data class Repeat(val times: Int) : Insertion
     /** [before] … [after] around the selected notes: tuplets, grace notes, octave lines. */
     data class Wrap(val before: String, val after: String) : Insertion
+    /** The selected notes as a repeat's first ending ([first]) or its next one. */
+    data class Ending(val first: Boolean) : Insertion
 }
 
 /** Clef, key, time, tempo and bar line changes, text, and repeats, at the selected note. */
@@ -1393,6 +1439,9 @@ private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (I
     var barAfter by remember { mutableStateOf(true) }
     var words by remember { mutableStateOf("") }
     var above by remember { mutableStateOf(true) }
+    var bold by remember { mutableStateOf(false) }
+    var italic by remember { mutableStateOf(true) }
+    var repeatKind by remember { mutableStateOf("repeat") }
     var times by remember { mutableStateOf("2") }
     var tuplet by remember { mutableStateOf("3/2") }
     var grace by remember { mutableStateOf("acciaccatura") }
@@ -1437,10 +1486,25 @@ private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (I
                     "text" -> {
                         OutlinedTextField(value = words, onValueChange = { words = it }, label = { Text("Text, e.g. dolce") }, singleLine = true)
                         Chips(listOf("above" to "above", "below" to "below"), if (above) "above" else "below") { above = it == "above" }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.clickable { bold = !bold }, verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = bold, onCheckedChange = { bold = it }); Text("bold", fontWeight = FontWeight.Bold)
+                            }
+                            Row(Modifier.clickable { italic = !italic }, verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = italic, onCheckedChange = { italic = it }); Text("italic", fontStyle = FontStyle.Italic)
+                            }
+                        }
                     }
                     "repeat" -> {
-                        Text("Repeats the selected notes (one voice), with repeat signs.", fontSize = 13.sp)
-                        Chips(listOf("2", "3", "4").map { it to "$it times" }, times) { times = it }
+                        Chips(listOf("repeat" to "Repeat these", "first" to "1st ending", "next" to "Next ending"), repeatKind) { repeatKind = it }
+                        when (repeatKind) {
+                            "repeat" -> {
+                                Text("Repeats the selected notes, with repeat signs (each voice selected).", fontSize = 13.sp)
+                                Chips(listOf("2", "3", "4").map { it to "$it times" }, times) { times = it }
+                            }
+                            "first" -> Text("The selected notes, the last of a repeat, become its 1st ending.", fontSize = 13.sp)
+                            else -> Text("The selected notes, right after a repeat's endings, become its next ending (2nd, 3rd…).", fontSize = 13.sp)
+                        }
                     }
                     "tuplet" -> {
                         Text("Makes the selected notes a tuplet: enter them with their written values first (three eighths for an eighth-note triplet).", fontSize = 13.sp)
@@ -1466,8 +1530,12 @@ private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (I
                         if (w == null && n == null) null else Insertion.Change("tempo", "\\tempo " + listOfNotNull(w, n).joinToString(" "))
                     }
                     "bar" -> Insertion.Change("bar", "\\bar \"$bar\"", after = barAfter)
-                    "text" -> words.trim().takeIf { it.isNotEmpty() }?.let { Insertion.Words(it, above) }
-                    "repeat" -> Insertion.Repeat(times.toInt())
+                    "text" -> words.trim().takeIf { it.isNotEmpty() }?.let { Insertion.Words(it, above, bold, italic) }
+                    "repeat" -> when (repeatKind) {
+                        "first" -> Insertion.Ending(first = true)
+                        "next" -> Insertion.Ending(first = false)
+                        else -> Insertion.Repeat(times.toInt())
+                    }
                     "tuplet" -> Insertion.Wrap("\\tuplet $tuplet {", "}")
                     "grace" -> Insertion.Wrap("\\$grace {", "}")
                     "ottava" -> Insertion.Wrap("\\ottava #$ottava", "\\ottava #0")
@@ -1729,9 +1797,6 @@ private fun EntryBar(
     onVoice: (Grob) -> Unit,
     duration: String,
     dot: Boolean,
-    keyboardName: String?,
-    hasPlace: Boolean,
-    canUndo: Boolean,
     onDuration: (String) -> Unit,
     onDot: () -> Unit,
     onRest: () -> Unit,
@@ -1751,68 +1816,44 @@ private fun EntryBar(
     twoHands: Boolean,
     onTwoHands: () -> Unit,
     onRecord: () -> Unit,
-    onUndo: () -> Unit,
-    canRedo: Boolean,
-    onRedo: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 4.dp, vertical = 2.dp)) {
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (voices.isNotEmpty()) {
-                // Switch the voice new notes go into: its note at the same moment is selected.
-                voices.forEachIndexed { i, (g, current) ->
-                    val label = "Voice " + (g.voiceId?.toIntOrNull() ?: (i + 1))
-                    val color = voiceColor(g.voice, voiceColors)
-                    val pad = PaddingValues(horizontal = 10.dp)
-                    if (current) Button(onClick = { onVoice(g) }, contentPadding = pad, colors = ButtonDefaults.buttonColors(containerColor = color)) { Text(label) }
-                    else OutlinedButton(onClick = { onVoice(g) }, contentPadding = pad) { Text(label, color = color) }
-                }
-                Spacer(Modifier.width(8.dp))
+    Row(
+        Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (voices.isNotEmpty()) {
+            // Which voice new notes go into: its note at the same moment is selected.
+            voices.forEachIndexed { i, (g, current) ->
+                val n = g.voiceId?.toIntOrNull() ?: (i + 1)
+                val color = voiceColor(g.voice, voiceColors)
+                Tool(onClick = { onVoice(g) }, selected = current, description = "Voice $n", fill = color) { c -> Text("$n", color = c, fontSize = 17.sp) }
             }
-            Text("New notes:", fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
-            for (d in listOf("1", "2", "4", "8", "16", "32")) {
-                if (d == duration) Button(onClick = { onDuration(d) }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(d) }
-                else OutlinedButton(onClick = { onDuration(d) }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(d) }
+            Gap()
+        }
+        for (d in listOf("1", "2", "4", "8", "16", "32")) {
+            Tool(onClick = { onDuration(d) }, selected = d == duration, description = DURATION_NAMES[d]) { c -> DurationGlyph(d, c) }
+        }
+        TextTool("•", "Dot", selected = dot) { onDot() }
+        TextTool("Rest", "Rest", fontSize = 14) { onRest() }
+        Gap()
+        TextTool("Fill", "Fill rests", selected = fillRests, fontSize = 14) { onFillRests() }
+        TextTool("Chord", "Add to the chord", selected = chordMode, fontSize = 14) { onChordMode() }
+        Gap()
+        // Real-time recording: tempo, rhythm grid, record / stop.
+        if (recordingBeat == null) {
+            TextTool("−", "Slower") { onBpm(-5) }
+            Text("♩=$bpm", fontSize = 14.sp, modifier = Modifier.padding(horizontal = 4.dp))
+            TextTool("+", "Faster") { onBpm(5) }
+            Tool(onClick = onGrid, description = "Rhythm grid") { c ->
+                Row(verticalAlignment = Alignment.CenterVertically) { Text("≈", color = c, fontSize = 14.sp); DurationGlyph(grid, c, size = 22.dp) }
             }
-            if (dot) Button(onClick = onDot, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Dot") }
-            else OutlinedButton(onClick = onDot, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Dot") }
-            OutlinedButton(onClick = onRest, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Rest") }
-            if (fillRests) Button(onClick = onFillRests, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Fill rests") }
-            else OutlinedButton(onClick = onFillRests, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Fill rests") }
-            if (chordMode) Button(onClick = onChordMode, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Chord") }
-            else OutlinedButton(onClick = onChordMode, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Chord") }
-            Spacer(Modifier.width(8.dp))
-            // Real-time recording: tempo, rhythm grid, record / stop.
-            if (recordingBeat == null) {
-                OutlinedButton(onClick = { onBpm(-5) }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("−") }
-                Text("♩=$bpm", fontSize = 14.sp, modifier = Modifier.padding(horizontal = 4.dp))
-                OutlinedButton(onClick = { onBpm(5) }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("+") }
-                OutlinedButton(onClick = onGrid, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("grid 1/$grid") }
-                if (canTwoHands) {
-                    if (twoHands) Button(onClick = onTwoHands, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Two hands") }
-                    else OutlinedButton(onClick = onTwoHands, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Two hands") }
-                }
-                Button(
-                    onClick = onRecord, contentPadding = PaddingValues(horizontal = 12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
-                ) { Text("● Record") }
-            } else {
-                Button(onClick = onRecord, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("■ Stop") }
-                Text(
-                    if (recordingBeat < 0) "Count-in: ${recordingBeat + 5}…" else "● Recording, beat ${recordingBeat + 1}",
-                    fontSize = 14.sp, color = Color(0xFFC62828), modifier = Modifier.padding(horizontal = 6.dp),
-                )
-            }
-            OutlinedButton(onClick = onUndo, enabled = canUndo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Undo") }
-            OutlinedButton(onClick = onRedo, enabled = canRedo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Redo") }
+            if (canTwoHands) TextTool("2 hands", "Record with two hands", selected = twoHands, fontSize = 14) { onTwoHands() }
+            Tool(onClick = onRecord, description = "Record", fill = Color(0xFFC62828)) { c -> Text("● Rec", color = c, fontSize = 15.sp) }
+        } else {
+            Tool(onClick = onRecord, selected = true, description = "Stop recording", fill = Color(0xFFC62828)) { c -> Text("■ Stop", color = c, fontSize = 15.sp) }
             Text(
-                (if (hasPlace && chordMode) "Into the selected chord. " else if (hasPlace) "After the selected note. " else "At the cursor. ") +
-                    (keyboardName?.let { "Play on $it, tap the piano, or tap a line or space on the staff." }
-                        ?: "Tap the piano or a line or space on the staff, or plug in a MIDI keyboard."),
-                fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(horizontal = 6.dp),
+                if (recordingBeat < 0) "  count-in ${recordingBeat + 5}…" else "  ● beat ${recordingBeat + 1}",
+                fontSize = 14.sp, color = Color(0xFFC62828),
             )
         }
     }
@@ -1937,23 +1978,20 @@ private fun MarksBar(
 ) {
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val pad = PaddingValues(horizontal = 8.dp)
         for ((group, marks) in MARKS) {
-            Text(group, fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(start = 6.dp, end = 2.dp))
+            if (group != MARKS.first().first) Gap()
             if (group == LINES && range) {
-                for ((kind, label) in RANGE_LINES) OutlinedButton(onClick = { onSpan(kind) }, enabled = enabled, contentPadding = pad) { Text(label) }
-                for ((what, label) in marks.filter { it.first == "tie" }) {
-                    if (what in on) Button(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
-                    else OutlinedButton(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
-                }
+                for ((kind, label) in RANGE_LINES) TextTool(label, kind, enabled, fontSize = 15) { onSpan(kind) }
+                for ((what, label) in marks.filter { it.first == "tie" }) TextTool(label, what, enabled, what in on, fontSize = 15) { onToggle(what) }
                 continue
             }
             for ((what, label) in marks) {
-                if (what in on) Button(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
-                else OutlinedButton(onClick = { onToggle(what) }, enabled = enabled, contentPadding = pad) { Text(label) }
+                val italic = group == "Dynamics"
+                Tool(onClick = { onToggle(what) }, enabled = enabled, selected = what in on, description = what) { c ->
+                    Text(label, color = c, fontSize = if (label.length > 3) 14.sp else 17.sp, fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal, fontWeight = if (italic) FontWeight.Bold else FontWeight.Normal)
+                }
             }
         }
     }
@@ -1962,7 +2000,7 @@ private fun MarksBar(
 private const val LINES = "Lines"
 
 /** With a range selected, slurs and hairpins go over it (LilyTools.span's kinds). */
-private val RANGE_LINES = listOf("slur" to "slur ( )", "cresc" to "cresc <", "decresc" to "dim >")
+private val RANGE_LINES = listOf("slur" to "( )", "cresc" to "<", "decresc" to ">")
 
 /** Where the source being edited is kept between sessions (in the app's files). */
 private const val DRAFT_FILE = "score-draft.ly"
@@ -2003,12 +2041,12 @@ private const val MAX_MARKS_LOOKUPS = 40
 private val MARKS = listOf(
     "Marks" to listOf(
         "staccato" to "•", "accent" to ">", "tenuto" to "–", "marcato" to "^",
-        "staccatissimo" to "▾", "fermata" to "fermata", "trill" to "tr",
+        "staccatissimo" to "▾", "fermata" to "𝄐", "trill" to "tr",
     ),
     "Dynamics" to listOf("pp", "p", "mp", "mf", "f", "ff", "sfz").map { it to it },
     LINES to listOf(
-        "slur-start" to "(", "slur-end" to ")", "tie" to "tie",
-        "cresc" to "cresc <", "decresc" to "dim >", "hairpin-end" to "end",
+        "slur-start" to "(", "slur-end" to ")", "tie" to "‿",
+        "cresc" to "<", "decresc" to ">", "hairpin-end" to "end",
     ),
 )
 
@@ -2018,7 +2056,8 @@ private fun EditBar(
     enabled: Boolean,
     /** There is a note to change the pitch of (not only rests). */
     pitched: Boolean,
-    canUndo: Boolean,
+    /** The selected note's duration ("4.", "8"…), shown on its button. */
+    current: String?,
     onStep: (Int) -> Unit,
     /** A new accidental: 1 sharp, -1 flat, 0 natural. */
     onAlter: (Int) -> Unit,
@@ -2037,37 +2076,81 @@ private fun EditBar(
     /** The selection is in one of several voices, so its voice can be removed. */
     inVoice: Boolean,
     onRemoveVoice: () -> Unit,
-    onUndo: () -> Unit,
-    canRedo: Boolean,
-    onRedo: () -> Unit,
 ) {
+    var more by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        @Composable
-        fun B(label: String, enabled: Boolean = true, onClick: () -> Unit) =
-            OutlinedButton(onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(label) }
-        B("▲", pitched) { onStep(+1) }
-        B("▼", pitched) { onStep(-1) }
-        B("♯", pitched) { onAlter(1) }
-        B("♭", pitched) { onAlter(-1) }
-        B("♮", pitched) { onAlter(0) }
-        B("♯⇄♭", pitched, onRespell)
-        for (d in listOf("1", "2", "4", "8", "16")) B(d, enabled) { onDuration(d) }
-        B("Dot", enabled, onDot)
-        B("Delete", enabled, onDelete)
-        B("Copy", enabled, onCopy)
-        B("Cut", enabled, onCut)
-        B("Paste", enabled && canPaste, onPaste)
-        B("Insert…", enabled, onInsert)
-        B("Transpose…", true, onTranspose)
-        B("Add voice", enabled, onAddVoice)
-        B("Remove voice", enabled && inVoice, onRemoveVoice)
-        B("Undo", canUndo, onUndo)
-        B("Redo", canRedo, onRedo)
+        TextTool("▲", "Up a step", pitched) { onStep(+1) }
+        TextTool("▼", "Down a step", pitched) { onStep(-1) }
+        TextTool("♯", "Sharp", pitched) { onAlter(1) }
+        TextTool("♭", "Flat", pitched) { onAlter(-1) }
+        TextTool("♮", "Natural", pitched) { onAlter(0) }
+        TextTool("♯⇄♭", "Other spelling", pitched, fontSize = 13) { onRespell() }
+        Gap()
+        val base = current?.trimEnd('.')
+        for (d in listOf("1", "2", "4", "8", "16")) {
+            Tool(onClick = { onDuration(d) }, enabled = enabled, selected = d == base, description = DURATION_NAMES[d]) { c -> DurationGlyph(d, c) }
+        }
+        TextTool("•", "Dot", enabled, selected = current?.endsWith(".") == true) { onDot() }
+        Gap()
+        IconTool(Glyphs.Delete, "Delete", enabled, onDelete)
+        IconTool(Glyphs.Copy, "Copy", enabled, onCopy)
+        IconTool(Glyphs.Cut, "Cut", enabled, onCut)
+        IconTool(Glyphs.Paste, "Paste", enabled && canPaste, onPaste)
+        Box {
+            IconTool(Glyphs.More, "More", true) { more = true }
+            DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                DropdownMenuItem(text = { Text("Insert… (clef, key, time, tempo, bar line, text, repeat, tuplet…)") }, enabled = enabled, onClick = { more = false; onInsert() })
+                DropdownMenuItem(text = { Text("Transpose…") }, onClick = { more = false; onTranspose() })
+                DropdownMenuItem(text = { Text("Add a voice here") }, enabled = enabled, onClick = { more = false; onAddVoice() })
+                DropdownMenuItem(text = { Text("Remove this voice") }, enabled = enabled && inVoice, onClick = { more = false; onRemoveVoice() })
+            }
+        }
     }
 }
+
+/** Spoken names of the note values, for accessibility. */
+private val DURATION_NAMES = mapOf("1" to "Whole note", "2" to "Half note", "4" to "Quarter note", "8" to "Eighth note", "16" to "Sixteenth note", "32" to "Thirty-second note")
+
+/** A compact square tool button; [content] gets the colour to draw in. */
+@Composable
+private fun Tool(
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    description: String? = null,
+    fill: Color? = null,
+    content: @Composable (Color) -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val background = when { selected -> fill ?: scheme.primary; else -> Color.Transparent }
+    val fg = when { !enabled -> scheme.onSurface.copy(alpha = 0.3f); selected -> Color.White; else -> fill ?: scheme.primary }
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        Modifier.padding(horizontal = 1.dp).height(40.dp).defaultMinSize(minWidth = 40.dp)
+            .clip(shape)
+            .background(background)
+            .border(1.dp, scheme.outline.copy(alpha = if (enabled) 0.45f else 0.15f), shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics { if (description != null) contentDescription = description }
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) { content(fg) }
+}
+
+@Composable
+private fun TextTool(label: String, description: String, enabled: Boolean = true, selected: Boolean = false, fontSize: Int = 18, onClick: () -> Unit) =
+    Tool(onClick, enabled, selected, description) { c -> Text(label, color = c, fontSize = fontSize.sp) }
+
+@Composable
+private fun IconTool(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, enabled: Boolean = true, onClick: () -> Unit) =
+    Tool(onClick, enabled, false, description) { c -> androidx.compose.material3.Icon(icon, contentDescription = null, tint = c, modifier = Modifier.size(22.dp)) }
+
+/** A little space between groups of tools. */
+@Composable
+private fun Gap() = Spacer(Modifier.width(8.dp))
 
 private object ScoreMapRational {
     fun parse(s: String): Double {

@@ -430,6 +430,38 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.27.0, fixes from the third tablet test:**
+  - A tap on the staff now goes where it is tapped, not after the selected note
+    (`ScoreLookup.entryPlace`).
+    - Within the tapped bar, the note goes after the last note whose left edge is
+      left of the tap, into a rest there (filled), or before the bar's first note.
+    - The voice is the selected note's if it has music in that bar; otherwise the
+      voice whose notes there are nearest the tap.
+  - Staves with only rests (a new score) had no note to read the clef from, so taps
+    did nothing. The score map now records each Clef's glyph and position and each
+    ClefModifier's octave, and `pitchAt` falls back to the clef in effect (G: g',
+    F: f, C: c'; the 8 of treble_8 moves it an octave).
+  - Slurs and hairpins over a selection in two voices (e.g. soprano and alto on
+    their own staves) grouped unnamed voices together. They are now grouped by
+    voice context. Repeat, tuplets, grace notes and octave lines over several voices
+    are done voice by voice.
+  - 1st and 2nd endings: `lilyedit.first_ending` turns the end of a repeat into
+    `\alternative { { … } }`, and `next_ending` adds the notes right after it as the
+    next ending.
+  - Lyrics for a voice in a `\\` passage went under the bottom staff. They now get
+    `\addlyrics \with { alignBelowContext = "…" }`, and the staff is given a name
+    (its variable's) if it had none.
+  - Text can be bold and italic (`^\markup { \bold \italic "…" }`).
+  - The bars were redesigned:
+    - compact square tools, with note values drawn as notes;
+    - Undo and Redo as icons, always at the start of the top row;
+    - Delete, Copy, Cut and Paste as icons;
+    - Insert, Transpose and Add/Remove voice in a "⋮" menu;
+    - short glyphs for the marks, and dynamics in bold italic.
+  - Tests: 3 Python tests, an entryPlace unit test, and an instrumented test (a tap
+    on an empty new choir score fills that bar's rest, and the clefs give b' b' b d
+    for the four middle lines).
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

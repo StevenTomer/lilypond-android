@@ -748,5 +748,32 @@ class Wraps(unittest.TestCase):
         self.assertEqual(absolute(out), absolute(self.SRC))
 
 
+
+class Fixes0270(unittest.TestCase):
+    def test_lyrics_for_a_voice_go_under_its_staff(self):
+        src = ("upper = \\relative c'' { << { b4 c d2 } \\\\ { g,2 fis } >> }\n"
+               "lower = \\relative c { \\clef bass g2 d' }\n"
+               "\\score { \\new PianoStaff << \\new Staff \\upper \\new Staff \\lower >> }")
+        out, p = e.set_verse(src, src.index("c d2"), 0, "Yes No Maybe")
+        self.assertIn('\\addlyrics \\with { alignBelowContext = "upper" } { Yes No Maybe }', out)
+        self.assertIn('\\new Staff = "upper" \\upper', out)
+        self.assertEqual(out[p:p + 4], "c d2")
+        self.assertEqual(e.verses(out, p), ["Yes No Maybe"])
+
+    def test_endings(self):
+        src = "\\relative c'' { c4 d e f | \\repeat volta 2 { g a b c | d c b a } | g1 | f1 }"
+        out = e.first_ending(src, [src.index("d c b"), src.index("a }")])
+        self.assertIn("\\repeat volta 2 { g a b c } \\alternative { { d4 c b a } } | g1", out)
+        out = e.next_ending(out, [out.index("g1")])
+        self.assertIn("\\alternative { { d4 c b a } { g1 } } | f1 }", out)
+        self.assertEqual(absolute(out), absolute(src))
+        with self.assertRaises(ValueError):
+            e.first_ending(src, [src.index("c4")])
+
+    def test_styled_text(self):
+        self.assertEqual(e.add_text("{ c4 }", 2, "dolce", italic=True), '{ c4^\\markup { \\italic "dolce" } }')
+        self.assertEqual(e.add_text("{ c4 }", 2, "ff", above=False, bold=True), '{ c4_\\markup { \\bold "ff" } }')
+
+
 if __name__ == "__main__":
     unittest.main()

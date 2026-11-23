@@ -351,6 +351,34 @@ class LilyToolsTest {
     }
 
     @Test
+    fun tapOnAnEmptyNewScoreFillsTheTappedBar() = runBlocking {
+        // A new choir score, nothing selected: a tap in the soprano's second bar fills that bar's rest.
+        val src = tools.newScore(LilyTools.NewScore("satb", bars = 3))
+        val r = engine.render(src)
+        assertTrue(r.log, r.success)
+        val lookup = org.lilyengine.scoreview.ScoreLookup(r.scoreMap!!)
+        val staves = lookup.grobsOnPage(1).filter { it.type == "StaffSymbol" }.sortedBy { lookup.pageRect(it)[1] }
+        val soprano = staves.first()
+        val rests = lookup.grobsOnPage(1).filter { it.type == "Rest" && lookup.staffOf(it) === soprano }.sortedBy { lookup.pageRect(it)[0] }
+        val second = rests[1]
+        val rr = lookup.pageRect(second)
+        val sr = lookup.pageRect(soprano)
+        val place = lookup.pitchAt(1, ((rr[0] + rr[2]) / 2).toDouble(), ((sr[1] + sr[3]) / 2).toDouble())!!
+        val target = lookup.entryPlace(place, null)!!
+        assertEquals(second.origin, target.item.origin)
+        // With only rests on the staves, the clefs tell the notes: the middle lines.
+        val middles = staves.map { st ->
+            val r2 = lookup.pageRect(st)
+            lookup.pitchAt(1, ((rr[0] + rr[2]) / 2).toDouble(), ((r2[1] + r2[3]) / 2).toDouble())!!.let { it.step to it.octave }
+        }
+        assertEquals(listOf(6 to 0, 6 to 0, 6 to -1, 1 to -1), middles) // b' b' b (treble 8) d (bass)
+        val at = org.lilyengine.scoreview.SourcePositions.offsetOf(src, target.item.origin!!.line, target.item.origin!!.char)
+        val text = tools.insertStep(src, at, place.step, place.octave, "4", after = target.after, fill = true).edit.applyTo(src)
+        // The soprano's second bar now starts with that note, and the bar adds up.
+        assertTrue(text, text.contains("r1 |\n  ") && Regex("""soprano = \\relative c'' \{\s*\\global\s*r1 \|\s*\w+'*,*4 r2\.""").containsMatchIn(text))
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

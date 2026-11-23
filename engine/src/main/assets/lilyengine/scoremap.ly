@@ -53,7 +53,7 @@
 #(define lilyengine:wanted
    '(NoteHead Rest MultiMeasureRest Stem Accidental Dots Script
      DynamicText Hairpin Slur PhrasingSlur Tie Beam BarLine
-     StaffSymbol Clef KeySignature TimeSignature LyricText ChordName))
+     StaffSymbol Clef ClefModifier KeySignature TimeSignature LyricText ChordName))
 
 %% JSON writer. Written straight to the output port, without `format`
 %% (slow in Guile): a full page of piano music has thousands of grobs.
@@ -169,8 +169,15 @@
                                     (octave . ,(ly:pitch-octave pitch))
                                     (name . ,(lilyengine:pitch-name pitch)))))
                    (duration . ,(and (ly:duration? duration) (ly:duration->string duration)))
-                   (staffPosition . ,(and (memq name '(NoteHead Rest))
+                   (staffPosition . ,(and (memq name '(NoteHead Rest Clef))
                                           (ly:grob-property grob 'staff-position #f)))
+                   ;; A clef's symbol ("clefs.G"), and its 8 or 15 above (+) or below (-).
+                   (clefGlyph . ,(and (eq? name 'Clef) (ly:grob-property grob 'glyph-name #f)))
+                   (clefOctave
+                    . ,(and (eq? name 'ClefModifier)
+                            (let ((text (markup->string (ly:grob-property grob 'text "")))
+                                  (dir (ly:grob-property grob 'direction DOWN)))
+                              (* (if (eqv? dir UP) 1 -1) (if (string-contains text "15") 2 1)))))
                    (linePositions . ,(and (eq? name 'StaffSymbol)
                                           (ly:grob-property grob 'line-positions #f)))
                    (staffSpace . ,(and (eq? name 'StaffSymbol)

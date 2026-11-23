@@ -106,11 +106,45 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
         val position = ((r[1] - yPt) / half + top).roundToInt()
         val head = onPage.filter { h ->
             h.type == "NoteHead" && h.pitch != null && h.staffPosition != null && staffOf(h) === g
-        }.minByOrNull { h -> pageRect(h).let { hr -> abs((hr[0] + hr[2]) / 2 - xPt) } } ?: return null
-        val p = head.pitch!!
-        val diatonic = p.octave * 7 + p.notename + (position - head.staffPosition!!)
+        }.minByOrNull { h -> pageRect(h).let { hr -> abs((hr[0] + hr[2]) / 2 - xPt) } }
+        // A note head tells the clef; on a staff of rests only, the clef itself does.
+        val diatonic = if (head != null) {
+            val p = head.pitch!!
+            p.octave * 7 + p.notename + (position - head.staffPosition!!)
+        } else {
+            clefReference(onPage, g, r, xPt)?.let { (refDiatonic, refPosition) -> refDiatonic + (position - refPosition) } ?: return null
+        }
         return StaffPitch(g, position, Math.floorMod(diatonic, 7), Math.floorDiv(diatonic, 7), xPt, r[1] + (top - position) * half)
             .also { it.halfSpacePt = half; it.reference = head }
+    }
+
+    /**
+     * The clef in effect at [xPt] on [staff] (the last one drawn before it):
+     * the note its symbol stands for (as octave * 7 + step) and its staff
+     * position. G clef: g', F clef: f, C clef: c'; an 8 or 15 moves it.
+     */
+    private fun clefReference(onPage: List<Grob>, staff: Grob, sr: FloatArray, xPt: Double): Pair<Int, Int>? {
+        val clefs = onPage.filter { it.type == "Clef" && it.clefGlyph != null && it.staffPosition != null }
+            .filter { pageRect(it).let { cr -> (cr[1] + cr[3]) / 2 in sr[1] - 1..sr[3] + 1 } }
+        val clef = clefs.filter { pageRect(it)[0] <= xPt }.maxByOrNull { pageRect(it)[0] } ?: clefs.minByOrNull { pageRect(it)[0] } ?: return null
+        val glyph = clef.clefGlyph ?: return null
+        val base = when {
+            glyph.startsWith("clefs.G") -> 0 * 7 + 4 // g'
+            glyph.startsWith("clefs.F") -> -1 * 7 + 3 // f
+            glyph.startsWith("clefs.C") -> 0 * 7 + 0 // c'
+            else -> return null // percussion, tab
+        }
+        val cr = pageRect(clef)
+        val modifier = onPage.filter { it.type == "ClefModifier" && it.clefOctave != null }
+            .minByOrNull { m -> pageRect(m).let { abs((it[0] + it[2]) / 2 - (cr[0] + cr[2]) / 2) + abs((it[1] + it[3]) / 2 - (cr[1] + cr[3]) / 2) } }
+            ?.takeIf { m ->
+                // its own clef's 8: close by, across and up or down (clefs of all staves line up)
+                pageRect(m).let {
+                    val gap = maxOf(0f, it[1] - cr[3], cr[1] - it[3]) // between the boxes, above or below
+                    abs((it[0] + it[2]) / 2 - (cr[0] + cr[2]) / 2) < 3 * pointsPerStaffSpace && gap < 1.5 * pointsPerStaffSpace
+                }
+            }
+        return base + 7 * (modifier?.clefOctave ?: 0) to clef.staffPosition!!
     }
 
     /**
@@ -259,6 +293,53 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
             .filter { x -> end(x)?.let { abs(it - stop) < 1e-6 } == true }
             .mapNotNull { x -> staffOf(x)?.let { st -> pageRect(st)[1].takeIf { it > top }?.let { x to it } } }
             .minByOrNull { it.second }?.first
+    }
+
+    /** Where a note tapped on the staff goes: after [item] ([after]), or into the rest [item] / before it. */
+    data class EntryPlace(val item: Grob, val after: Boolean)
+
+    /**
+     * Where a note entered by tapping the staff at [p] goes, in [voiceOf]'s
+     * voice if it is on that staff (else the staff's first voice). Within the
+     * tapped bar: after the last note or rest whose left edge is left of the
+     * tap (a rest is filled); before the bar's first item if the tap is left
+     * of it (a rest there is filled). Null if the staff has no notes or rests.
+     */
+    fun entryPlace(p: StaffPitch, voiceOf: Grob?): EntryPlace? {
+        val page = p.staff.page
+        val onStaff = grobsOnPage(page).filter { (it.type == "NoteHead" || it.type == "Rest") && it.origin != null && staffOf(it) === p.staff }
+        if (onStaff.isEmpty()) return null
+        val sr = pageRect(p.staff)
+        val bars = grobsOnPage(page).filter { it.type == "BarLine" }.map { pageRect(it) }
+            .filter { it[3] >= sr[1] && it[1] <= sr[3] }.map { (it[0] + it[2]) / 2.0 }
+        val x = p.xPt
+        val barStart = bars.filter { it <= x }.maxOrNull() ?: sr[0].toDouble()
+        val barEnd = bars.filter { it > x }.minOrNull() ?: sr[2].toDouble()
+        fun voiceKey(g: Grob) = g.voice to g.voiceId
+        fun inThisBar(g: Grob) = pageRect(g)[0] >= barStart && pageRect(g)[0] < barEnd
+        // The voice: the selected note's if it has music in the tapped bar; else the voice
+        // whose notes there are nearest the tap; in an empty bar, the selected or first voice.
+        val inBarAll = onStaff.filter(::inThisBar)
+        val selectedVoice = voiceOf?.takeIf { staffOf(it) === p.staff }?.let(::voiceKey)
+        val voice = when {
+            selectedVoice != null && inBarAll.any { voiceKey(it) == selectedVoice } -> selectedVoice
+            inBarAll.isNotEmpty() -> voiceKey(inBarAll.minBy { g -> pageRect(g).let { r -> abs((r[1] + r[3]) / 2 - p.yPt) } })
+            selectedVoice != null -> selectedVoice
+            else -> onStaff.map(::voiceKey).distinct()
+                .minWith(compareBy({ it.second?.toIntOrNull() ?: Int.MAX_VALUE }, { it.first ?: Int.MAX_VALUE }))
+        }
+        // One per chord: its leftmost head.
+        val items = onStaff.filter { voiceKey(it) == voice }
+            .groupBy { it.origin!!.line to it.origin!!.char }.map { (_, hs) -> hs.minBy { pageRect(it)[0] } }
+            .sortedBy { pageRect(it)[0] }
+        val inBar = items.filter(::inThisBar)
+        inBar.lastOrNull { pageRect(it)[0] <= x }?.let { return EntryPlace(it, after = true) }
+        inBar.firstOrNull()?.let { first ->
+            if (first.type == "Rest") return EntryPlace(first, after = true) // filled
+            return items.lastOrNull { pageRect(it)[0] < barStart }?.let { EntryPlace(it, after = true) } ?: EntryPlace(first, after = false)
+        }
+        // An empty bar (or past the end): after the last item before the tap.
+        return items.lastOrNull { pageRect(it)[0] <= x }?.let { EntryPlace(it, after = true) } ?: EntryPlace(items.first(), after = false)
     }
 
     companion object {

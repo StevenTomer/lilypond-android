@@ -59,6 +59,10 @@ class ScoreMap(
         val staffSpace: Double?,
         /** KeySignature only: the alteration (in whole tones, 1/2 = sharp) of each step (0 = c) it changes. */
         val keyAlterations: Map<Int, Double>? = null,
+        /** Clef only: its symbol, e.g. "clefs.G", "clefs.F", "clefs.C". */
+        val clefGlyph: String? = null,
+        /** ClefModifier only: octaves the clef is moved by (the 8 below a tenor's treble clef: -1). */
+        val clefOctave: Int? = null,
     ) {
         val momentValue: Double? get() = moment?.let(::parseRational)
     }
@@ -121,6 +125,8 @@ class ScoreMap(
                     List(a.length()) { a.getDouble(it) }
                 },
                 staffSpace = if (g.isNull("staffSpace")) null else g.getDouble("staffSpace"),
+                clefGlyph = g.optStringOrNull("clefGlyph"),
+                clefOctave = g.optIntOrNull("clefOctave"),
                 keyAlterations = g.optJSONArray("keyAlterations")?.let { a ->
                     List(a.length()) { a.getJSONObject(it) }
                         .associate { it.getInt("step") to parseRational(it.getString("alteration")) }

@@ -373,9 +373,22 @@ class LilyTools(context: Context) {
     )
 
     /** Text over (or under) the item at [offset]: ^"dolce". */
-    suspend fun addText(text: String, offset: Int, words: String, above: Boolean = true): TextEdit = call(
+    suspend fun addText(text: String, offset: Int, words: String, above: Boolean = true, bold: Boolean = false, italic: Boolean = false): TextEdit = call(
         text,
-        JSONObject().put("op", "add_text").put("pos", text.codePointCount(0, offset)).put("words", words).put("above", above),
+        JSONObject().put("op", "add_text").put("pos", text.codePointCount(0, offset)).put("words", words).put("above", above)
+            .put("bold", bold).put("italic", italic),
+    )
+
+    /** Makes the items at [offsets], the end of a \\repeat volta's music, its first ending (\\alternative). */
+    suspend fun firstEnding(text: String, offsets: List<Int>): TextEdit = call(
+        text,
+        JSONObject().put("op", "first_ending").put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) })),
+    )
+
+    /** Makes the items at [offsets], right after a repeat's endings, its next ending. */
+    suspend fun nextEnding(text: String, offsets: List<Int>): TextEdit = call(
+        text,
+        JSONObject().put("op", "next_ending").put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) })),
     )
 
     /**

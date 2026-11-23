@@ -1319,7 +1319,7 @@ def _verse_blocks(text, end):
     out = []
     at = end
     while True:
-        m = re.compile(r"\s*\\addlyrics\s*(\{)").match(text, at)
+        m = re.compile(r"\s*\\addlyrics\s*(?:\\with\s*\{[^{}]*\}\s*)?(\{)").match(text, at)
         if not m or m.start(1) not in braces:
             return out
         close = braces[m.start(1)] + 1
@@ -1447,6 +1447,30 @@ def verses(text, pos):
 _VOICE_SETTINGS = ["\\voiceOne", "\\voiceTwo", "\\voiceThree", "\\voiceFour"]
 
 
+_STAFF_HEAD = r'\\new\s+Staff(\s*=\s*"([^"]+)")?(\s*\\with\s*\{[^{}]*\})?\s*'
+
+
+def _staff_for(text, start):
+    """The \\new Staff whose music holds the { } at `start` (directly, or
+    through a variable it uses): (its name or None, where a name can be
+    written in after "Staff", a name to give it). None if not found."""
+    braces, _ = _brackets(text)
+    outer = min((o for o, c in braces.items() if o <= start < c and _word_before(text, o)[0] not in _BLOCKS),
+                default=start)
+    before = text[:outer]
+    m = re.search(r'([A-Za-z]+)\s*=\s*' + _MUSIC_PREFIX + r'$', before)
+    if m:
+        use = re.search(_STAFF_HEAD + r'\\' + m.group(1) + r'(?![A-Za-z])', text)
+        suggested = m.group(1)
+    else:
+        use = re.search(_STAFF_HEAD + _MUSIC_PREFIX + r'$', before)
+        suggested = "staff"
+    if not use:
+        return None
+    after_staff = use.start() + text[use.start():].index("Staff") + len("Staff")
+    return use.group(2), after_staff, suggested
+
+
 def set_verse(text, pos, index, plain):
     """Sets verse `index` (0 = first) of the melody at `pos` to the plain
     text, adding the verse (index = number of verses) or removing it (empty
@@ -1486,7 +1510,25 @@ def set_verse(text, pos, index, plain):
         else:
             addl = [b for b in every if b[0] == "addlyrics"]
             at = addl[-1][3] if addl else end
-            text = text[:at] + " \\addlyrics { " + words + " }" + text[at:]
+            with_ = ""
+            if voice is not None:
+                # Lyrics made inside a << \\\\ >> passage go to the bottom of the
+                # score unless told which staff to go under: name it if need be.
+                staff = _staff_for(text, start)
+                if staff is not None:
+                    name, name_at, suggested = staff
+                    if name is None:
+                        name = suggested
+                        insert = ' = "%s"' % name
+                        text = text[:name_at] + insert + text[name_at:]
+                        if name_at < at:
+                            at += len(insert)
+                        if name_at < pos:
+                            pos += len(insert)
+                        if name_at < start:
+                            start += len(insert)
+                    with_ = ' \\with { alignBelowContext = "%s" }' % name
+            text = text[:at] + " \\addlyrics" + with_ + " { " + words + " }" + text[at:]
             added_lyrics = True
     else:
         raise ValueError("no verse %d" % (index + 1))
@@ -1556,7 +1598,7 @@ def _music_ends(text):
     of a named voice (\\lyricsto): (start, end after "}")."""
     braces, _ = _brackets(text)
     for o, c in braces.items():
-        if re.compile(r"\s*\\addlyrics").match(text, c + 1) or _voice_name(text, o):
+        if re.compile(r"\s*\\addlyrics").match(text, c + 1) or _voice_name(text, o):  # (with or without \\with)
             yield o, c + 1
 
 
@@ -1866,12 +1908,15 @@ def change(text, pos, kind, written, after=False):
     return _fix_octaves(text, desired)
 
 
-def add_text(text, pos, words, above=True):
-    """Text over (or under) the note, chord or rest at `pos`: ^"dolce"."""
+def add_text(text, pos, words, above=True, bold=False, italic=False):
+    """Text over (or under) the note, chord or rest at `pos`: ^"dolce", or
+    ^\\markup { \\bold \\italic "dolce" } with a style."""
     items = _items(text)
     it = items[_item_index(text, items, pos)][0]
     end = _item_end(text, it)
-    return text[:end] + ("^" if above else "_") + _string(words) + text[end:]
+    styles = ("\\bold " if bold else "") + ("\\italic " if italic else "")
+    written = "\\markup { %s%s }" % (styles, _string(words)) if styles else _string(words)
+    return text[:end] + ("^" if above else "_") + written + text[end:]
 
 
 def wrap(text, positions, before_text, after_text=""):
@@ -1895,6 +1940,73 @@ def wrap(text, positions, before_text, after_text=""):
         k = first[0].insert_pos - start
         inner = inner[:k] + first[2] + inner[k:]
     text = text[:start] + before_text + " " + inner + (" " + after_text if after_text else "") + text[end:]
+    return _fix_octaves(text, [n.key() for n in before])
+
+
+def first_ending(text, positions):
+    """Makes the items at `positions`, the end of a \\repeat volta's music,
+    its first ending: \\repeat volta 2 { A B } -> \\repeat volta 2 { A }
+    \\alternative { { B } }."""
+    braces, _ = _brackets(text)
+    items = _items(text)
+    ks = sorted({_item_index(text, items, p) for p in positions})
+    start = _item_start(text, items[ks[0]][0])
+    end = _item_end(text, items[ks[-1]][0])
+    rep = None
+    for m in re.finditer(r"\\repeat\s+volta\s+\d+\s*(\{)", text):
+        o = m.start(1)
+        if o in braces and o < start and end <= braces[o]:
+            rep = (o, braces[o])
+    if rep is None:
+        raise ValueError("select the end of a repeat (\\repeat volta)")
+    o, c = rep
+    if text[end:c].strip():
+        raise ValueError("the first ending is the last notes of the repeat: select up to its end")
+    if re.compile(r"\s*\\alternative").match(text, c + 1):
+        raise ValueError("this repeat has endings already: use Next ending")
+    before = notes(text)
+    first, written, effective = items[ks[0]]
+    inner = text[start:end]
+    if written is None:
+        k = first.insert_pos - start
+        inner = inner[:k] + effective + inner[k:]
+    body_end = start  # (a bar check before the ending stays out of the body)
+    while body_end > o + 1 and (text[body_end - 1].isspace() or text[body_end - 1] == "|"):
+        body_end -= 1
+    text = text[:body_end] + " }" + " \\alternative { { " + inner + " } }" + text[c + 1:]
+    return _fix_octaves(text, [n.key() for n in before])
+
+
+def next_ending(text, positions):
+    """Makes the items at `positions`, right after a repeat's \\alternative,
+    its next ending."""
+    braces, _ = _brackets(text)
+    items = _items(text)
+    ks = sorted({_item_index(text, items, p) for p in positions})
+    start = _item_start(text, items[ks[0]][0])
+    end = _item_end(text, items[ks[-1]][0])
+    alt = None
+    for m in re.finditer(r"\\alternative\s*(\{)", text):
+        o = m.start(1)
+        if o in braces and braces[o] < start and not text[braces[o] + 1:start].strip().strip("|").strip():
+            alt = (o, braces[o])
+    if alt is None:
+        raise ValueError("select the notes right after the repeat's endings")
+    if not _same_sequence(text, start, end):
+        raise ValueError("select notes in one voice")
+    o, c = alt
+    before = notes(text)
+    first, written, effective = items[ks[0]]
+    inner = text[start:end]
+    if written is None:
+        k = first.insert_pos - start
+        inner = inner[:k] + effective + inner[k:]
+    nxt = items[ks[-1] + 1] if ks[-1] + 1 < len(items) else None
+    if nxt is not None and nxt[1] is None:  # the music after keeps its duration
+        text = text[:nxt[0].insert_pos] + nxt[2] + text[nxt[0].insert_pos:]
+    rest = text[c + 1:start] + text[end:]
+    rest = re.sub(r"^(\s*\|)\s*\|", r"\1", rest)  # the bar check left behind, now doubled
+    text = text[:c] + "{ " + inner + " } " + text[c:c + 1] + rest
     return _fix_octaves(text, [n.key() for n in before])
 
 
@@ -2010,9 +2122,13 @@ def call(request_json):
         elif op == "change":
             out = change(text, req["pos"], req["kind"], req["written"], req.get("after", False))
         elif op == "add_text":
-            out = add_text(text, req["pos"], req["words"], req.get("above", True))
+            out = add_text(text, req["pos"], req["words"], req.get("above", True), req.get("bold", False), req.get("italic", False))
         elif op == "wrap":
             out = wrap(text, req["positions"], req["before"], req.get("after", ""))
+        elif op == "first_ending":
+            out = first_ending(text, req["positions"])
+        elif op == "next_ending":
+            out = next_ending(text, req["positions"])
         elif op == "repeat":
             out = repeat(text, req["positions"], req.get("times", 2))
         elif op == "marks":

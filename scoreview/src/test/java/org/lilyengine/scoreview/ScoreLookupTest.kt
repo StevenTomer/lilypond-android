@@ -72,6 +72,22 @@ class ScoreLookupTest {
     }
 
     @Test
+    fun entryGoesWhereTheStaffIsTapped() {
+        // Between voice 1's c'' and its first e'' (first bar): after c'', in voice 1.
+        val c = head("c''", "1")
+        val d = map.grobs.filter { it.type == "NoteHead" && it.pitch?.name == "e''" && it.voiceId == "1" }.minBy { it.momentValue!! }
+        val x = (lookup.pageRect(c)[2] + lookup.pageRect(d)[0]) / 2.0
+        val y = centre(c).second
+        val place = lookup.entryPlace(lookup.pitchAt(1, x, y)!!, c)!!
+        assertEquals(c.origin, place.item.origin)
+        assertTrue(place.after)
+        // The same place with voice 2 selected goes into voice 2 (after its c', the note left of the tap).
+        val c2 = head("c'", "2")
+        val place2 = lookup.entryPlace(lookup.pitchAt(1, x, y)!!, c2)!!
+        assertEquals("2", place2.item.voiceId)
+    }
+
+    @Test
     fun tapOnANoteHeadFindsIt() {
         val g = head("c''", "1")
         val (x, y) = centre(g)
