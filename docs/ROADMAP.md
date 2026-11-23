@@ -430,6 +430,21 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.31.0, tabs and coding keys:**
+  - Several documents open at once, as tabs under the title band (`Documents.kt`).
+    Each tab keeps its own draft, file record and undo history. A tab without a file
+    is named by its score's title. × closes a tab (asking first if it has unsaved
+    changes), and + opens a new one. Open…, New… and the samples open in a new tab
+    unless the current one is untouched. The single draft from before becomes the
+    first tab.
+  - While the source is typed with the on-screen keyboard, two rows of coding keys
+    sit above it (\\ { } << >> < > [ ] ( ) ~ ' , | / " # % ^ _ - = ! . * : $ and
+    the cursor arrows), in place of the keypad.
+  - Add… moved to the start of the keypad's tab row. The keypad's buttons are
+    smaller (44 instead of 60), with tighter spacing and a Button size setting.
+  - Delete left the top bar (Cut does it, keeping a copy). It is still in the
+    catalog, to put on a page.
+  - The File button just says File; the tab shows the name.
 - **0.30.0, a look of its own** (`Theme.kt`):
   - Light and dark colour schemes (slate blue, warm neutrals), following the system
     or set in Settings. Colours the scheme doesn't name are in `AppColors`.

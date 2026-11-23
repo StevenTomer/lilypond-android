@@ -1,5 +1,12 @@
 package org.lilyengine.harness
 
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.widthIn
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.Surface
 import androidx.compose.material3.PrimaryTabRow
@@ -90,18 +97,62 @@ private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard, appearance: App
     var settings by remember { mutableStateOf(false) }
     /** Bumped to open the keypad's settings (they live with the keypad, in the score screen). */
     var keypadRequest by remember { mutableIntStateOf(0) }
+    // The open documents, one per tab; the one in front is edited.
+    val context = LocalContext.current
+    val docs = remember { mutableStateListOf<OpenDoc>() }
+    var active by rememberSaveable { mutableStateOf("") }
+    if (docs.isEmpty()) {
+        val (loaded, front) = remember { Documents.load(context) }
+        docs.addAll(loaded)
+        if (active.isEmpty() || docs.none { it.id == active }) active = front
+    }
+    fun saveTabs() = Documents.save(context, docs, active)
+    fun show(id: String) { active = id; saveTabs() }
+    fun openTab(doc: OpenDoc) { docs.add(doc); show(doc.id) }
+    var closing by remember { mutableStateOf<OpenDoc?>(null) }
+    fun close(doc: OpenDoc) {
+        val i = docs.indexOf(doc)
+        docs.remove(doc)
+        Documents.discard(context, doc)
+        if (docs.isEmpty()) docs.add(Documents.create(context, EMPTY_SCORE))
+        if (active == doc.id) active = docs[(i - 1).coerceIn(0, docs.size - 1)].id
+        saveTabs()
+    }
+    val front = docs.firstOrNull { it.id == active } ?: docs.first()
     // The band's colour also fills the status bar's strip above it.
     Column(Modifier.fillMaxSize().background(appColors.band).safeDrawingPadding()) {
         TitleBand(onSettings = { settings = true })
+        DocumentTabs(
+            docs = docs,
+            active = front.id,
+            onShow = ::show,
+            onClose = { d -> if (d.modified) closing = d else close(d) },
+            onNew = { openTab(Documents.create(context, EMPTY_SCORE)) },
+        )
         Surface(Modifier.weight(1f).fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
             Box(Modifier.fillMaxSize()) {
-                ScoreScreen(engine, keyboard, keypadSettingsRequest = keypadRequest)
+                key(front.id) {
+                    ScoreScreen(
+                        engine, keyboard, front,
+                        onOpenNew = { text, file -> openTab(Documents.create(context, text, file)) },
+                        keypadSettingsRequest = keypadRequest,
+                    )
+                }
                 if (diagnostics) {
                     BackHandler { diagnostics = false }
                     Surface(Modifier.fillMaxSize()) { Diagnostics(engine, keyboard, onClose = { diagnostics = false }) }
                 }
             }
         }
+    }
+    closing?.let { d ->
+        AlertDialog(
+            onDismissRequest = { closing = null },
+            title = { Text("Close “${d.name ?: "Untitled"}”?") },
+            text = { Text("It has changes that aren't saved to a file. Closing the tab discards them.") },
+            confirmButton = { TextButton(onClick = { closing = null; close(d) }) { Text("Close without saving") } },
+            dismissButton = { TextButton(onClick = { closing = null }) { Text("Keep it open") } },
+        )
     }
     if (settings) {
         AppSettingsDialog(
@@ -111,6 +162,47 @@ private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard, appearance: App
             onDiagnostics = { settings = false; diagnostics = true },
             onDismiss = { settings = false },
         )
+    }
+}
+
+/** The open documents as tabs: tap to bring one to the front, × to close, + for a new one. */
+@Composable
+private fun DocumentTabs(docs: List<OpenDoc>, active: String, onShow: (String) -> Unit, onClose: (OpenDoc) -> Unit, onNew: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().background(scheme.surfaceContainerHighest).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        for (d in docs) {
+            val on = d.id == active
+            Row(
+                Modifier.padding(top = 4.dp, end = 2.dp)
+                    .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
+                    .background(if (on) scheme.background else scheme.surfaceContainer)
+                    .clickable { onShow(d.id) }
+                    .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                WithTooltip((d.name ?: "Untitled") + if (d.modified) " (not saved to a file)" else "") {
+                    Text(
+                        (d.name ?: "Untitled") + if (d.modified) " •" else "",
+                        fontSize = 13.sp, maxLines = 1,
+                        fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                        color = if (on) scheme.primary else scheme.onSurfaceVariant,
+                        modifier = Modifier.widthIn(max = 180.dp),
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+                WithTooltip("Close this tab") {
+                    Text("×", fontSize = 15.sp, color = scheme.onSurfaceVariant,
+                        modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { onClose(d) }.padding(horizontal = 7.dp, vertical = 2.dp))
+                }
+            }
+        }
+        WithTooltip("New score in a new tab") {
+            Text("+", fontSize = 17.sp, color = scheme.primary,
+                modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(6.dp)).clickable(onClick = onNew).padding(horizontal = 12.dp, vertical = 2.dp))
+        }
     }
 }
 

@@ -110,6 +110,8 @@ data class FloatingPage(val pageId: String, val tall: Offset, val wide: Offset, 
 data class KeypadConfig(
     val columns: Int = 5,
     val rows: Int = 4,
+    /** The largest a button may be, in dp (it shrinks to fit the screen). */
+    val cell: Int = 44,
     val pages: List<KeypadPage> = DEFAULT_PAGES,
     /** Pages follow the mode and selection (unpinned). */
     val follow: Boolean = true,
@@ -120,7 +122,7 @@ data class KeypadConfig(
     val translucent: Boolean = false,
 ) {
     fun toJson(): String = JSONObject()
-        .put("version", VERSION).put("columns", columns).put("rows", rows).put("follow", follow).put("dock", dock).put("translucent", translucent)
+        .put("version", VERSION).put("columns", columns).put("cell", cell).put("rows", rows).put("follow", follow).put("dock", dock).put("translucent", translucent)
         .put("pages", JSONArray(pages.map { p -> JSONObject().put("id", p.id).put("name", p.name).put("slots", JSONArray(p.slots.map { it ?: JSONObject.NULL })) }))
         .put("floating", JSONArray(floating.map { f ->
             JSONObject().put("page", f.pageId).put("tx", f.tall.x).put("ty", f.tall.y).put("wx", f.wide.x).put("wy", f.wide.y).put("collapsed", f.collapsed)
@@ -150,7 +152,7 @@ data class KeypadConfig(
                 }
             }.orEmpty()
             KeypadConfig(
-                o.optInt("columns", 5), o.optInt("rows", 4), pages, o.optBoolean("follow", true),
+                o.optInt("columns", 5), o.optInt("rows", 4), o.optInt("cell", 44), pages, o.optBoolean("follow", true),
                 o.optString("dock", "auto"), floating, o.optBoolean("translucent"),
             )
         }.getOrDefault(KeypadConfig())
@@ -247,7 +249,7 @@ fun KeyButton(command: Command, size: androidx.compose.ui.unit.Dp, arranging: Bo
     val shape = RoundedCornerShape(10.dp)
     WithTooltip(command.name) {
         Box(
-            Modifier.padding(1.5.dp).size(size)
+            Modifier.padding(1.dp).size(size)
                 .clip(shape)
                 .background(if (selected) (tint ?: scheme.primary) else if (arranging) scheme.secondaryContainer.copy(alpha = 0.4f) else Color.Transparent)
                 .border(1.dp, scheme.outline.copy(alpha = if (enabled) 0.45f else 0.15f), shape)
@@ -274,7 +276,7 @@ fun GlyphView(glyph: Glyph, color: Color) = when (glyph) {
 private fun EmptySlot(size: androidx.compose.ui.unit.Dp, arranging: Boolean, onArrange: () -> Unit) {
     val shape = RoundedCornerShape(10.dp)
     Box(
-        Modifier.padding(1.5.dp).size(size).clip(shape)
+        Modifier.padding(1.dp).size(size).clip(shape)
             .then(if (arranging) Modifier.border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), shape).clickable(onClick = onArrange) else Modifier),
         contentAlignment = Alignment.Center,
     ) { if (arranging) Text("+", color = MaterialTheme.colorScheme.outline, fontSize = 18.sp) }
@@ -317,8 +319,10 @@ fun KeypadTabs(
     onFloat: () -> Unit,
     onArrangeDone: () -> Unit,
     onSettings: () -> Unit,
+    onAdd: () -> Unit,
 ) {
     Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+        if (!arranging) SmallControl("+…", "Add… (search all the notation: marks, clefs, repeats…)", onAdd)
         for (p in pages) {
             val on = p.id == current
             WithTooltip("Page: ${p.name}") {
@@ -495,6 +499,12 @@ fun KeypadSettingsDialog(
                 }
                 Stepper("Columns", config.columns, 2..8) { onChange(config.copy(columns = it)) }
                 Stepper("Rows", config.rows, 1..8) { onChange(config.copy(rows = it)) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Button size", modifier = Modifier.width(110.dp))
+                    OutlinedButton(onClick = { onChange(config.copy(cell = (config.cell - 4).coerceAtLeast(32))) }, enabled = config.cell > 32) { Text("−") }
+                    Text("${config.cell}", fontSize = 18.sp, modifier = Modifier.padding(horizontal = 12.dp))
+                    OutlinedButton(onClick = { onChange(config.copy(cell = (config.cell + 4).coerceAtMost(72))) }, enabled = config.cell < 72) { Text("+") }
+                }
                 Text("Dock")
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     val pad = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)

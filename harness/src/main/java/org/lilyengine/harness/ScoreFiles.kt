@@ -19,8 +19,12 @@ object ScoreFiles {
 
     private const val PREFS = "score-file"
 
-    fun load(context: Context): Current {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun prefs(context: Context, doc: String?) =
+        context.getSharedPreferences(if (doc == null) PREFS else "$PREFS-$doc", Context.MODE_PRIVATE)
+
+    /** [doc]'s file (null: the single file remembered before tabs). */
+    fun load(context: Context, doc: String? = null): Current {
+        val p = prefs(context, doc)
         return Current(
             p.getString("uri", null)?.let(Uri::parse),
             p.getString("name", null),
@@ -28,13 +32,15 @@ object ScoreFiles {
         )
     }
 
-    fun store(context: Context, current: Current) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit {
+    fun store(context: Context, doc: String, current: Current) {
+        prefs(context, doc).edit {
             if (current.uri != null) putString("uri", current.uri.toString()) else remove("uri")
             if (current.name != null) putString("name", current.name) else remove("name")
             if (current.savedHash != null) putInt("savedHash", current.savedHash) else remove("savedHash")
         }
     }
+
+    fun forget(context: Context, doc: String) = prefs(context, doc).edit { clear() }
 
     /** The file's name as the picker shows it, e.g. "minuet.ly". */
     fun displayName(context: Context, uri: Uri): String? = runCatching {

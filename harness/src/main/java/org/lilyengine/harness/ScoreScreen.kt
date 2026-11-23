@@ -60,6 +60,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -117,11 +121,19 @@ import androidx.compose.runtime.collectAsState
  * highlight the note. Both directions keep the voices of a `\\` passage
  * apart.
  */
-@OptIn(FlowPreview::class)
+@OptIn(FlowPreview::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRequest: Int = 0) {
-    val appFiles = LocalContext.current.filesDir
-    val draftFile = remember { java.io.File(appFiles, DRAFT_FILE) }
+fun ScoreScreen(
+    engine: LilyPondEngine,
+    keyboard: MidiKeyboard,
+    /** The tab being edited: its draft, file and undo history. */
+    doc: OpenDoc,
+    /** Opens [text] in a tab of its own (when this one already holds work). */
+    onOpenNew: (text: String, file: ScoreFiles.Current) -> Unit,
+    keypadSettingsRequest: Int = 0,
+) {
+    val draftContext = LocalContext.current
+    val draftFile = remember(doc.id) { doc.draft(draftContext) }
     /** The source being edited: the saved draft if there is one, else the sample. */
     var text by remember {
         mutableStateOf(TextFieldValue(runCatching { draftFile.readText() }.getOrNull()?.takeIf { it.isNotBlank() } ?: SCORE_SAMPLE))
@@ -133,7 +145,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
         val t = text.text
         withContext(Dispatchers.IO) {
             runCatching {
-                val tmp = java.io.File(draftFile.parentFile, "$DRAFT_FILE.tmp")
+                val tmp = java.io.File(draftFile.parentFile, draftFile.name + ".tmp")
                 tmp.writeText(t)
                 tmp.renameTo(draftFile)
             }
@@ -172,7 +184,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
      * (two or more), which the selection follows across re-renders and edits.
      */
     var range by remember { mutableStateOf<List<Int>>(emptyList()) }
-    val undo = remember { UndoHistory() }
+    val undo = doc.undo
     var busy by remember { mutableStateOf(false) }
     // Python starts in the background, so the first edit doesn't wait for it.
     LaunchedEffect(Unit) { runCatching { tools.start() } }
@@ -186,9 +198,13 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
     /** How long the last full render took: long scores get a fast preview after an edit. */
     var lastFullMillis by remember { mutableStateOf(0L) }
     /** The file the score was opened from or saved to, if any, and whether it has unsaved changes. */
-    var file by remember { mutableStateOf(ScoreFiles.load(context)) }
+    var file by remember { mutableStateOf(ScoreFiles.load(context, doc.id)) }
     val modified = file.savedHash != text.text.hashCode()
-    fun setFile(f: ScoreFiles.Current) { file = f; ScoreFiles.store(context, f) }
+    fun setFile(f: ScoreFiles.Current) { file = f; ScoreFiles.store(context, doc.id, f) }
+    // The tab shows the file's name and whether it has unsaved changes.
+    // A score with no file yet goes by its title.
+    val headerTitle = remember(text.text) { Documents.titleOf(text.text) }
+    SideEffect { doc.name = file.name ?: headerTitle; doc.modified = modified }
     /** The last whole render's PDF, copied out for sharing (renders delete their own files). */
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
@@ -231,6 +247,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
         selectedOffset = null; selection = emptyList(); range = emptyList()
         text = TextFieldValue(newText)
     }
+    /**
+     * Puts [newText] (from [newFile]) in front: here if this tab is untouched
+     * (no file, nothing done to it), else in a tab of its own.
+     */
+    fun openDocument(newText: String, newFile: ScoreFiles.Current) {
+        val untouched = file.uri == null && !undo.isNotEmpty() && text.text.trim() in setOf(EMPTY_SCORE.trim(), SCORE_SAMPLE.trim())
+        if (untouched) { replaceText(newText); setFile(newFile) } else onOpenNew(newText, newFile)
+    }
     fun saveTo(uri: android.net.Uri, name: String?) {
         runCatching { ScoreFiles.write(context, uri, text.text) }
             .onSuccess {
@@ -245,8 +269,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
             ScoreFiles.keepAccess(context, uri)
             val t = ScoreFiles.read(context, uri)
             val name = ScoreFiles.displayName(context, uri)
-            replaceText(t)
-            setFile(ScoreFiles.Current(uri, name, t.hashCode()))
+            openDocument(t, ScoreFiles.Current(uri, name, t.hashCode()))
             status = "Opened ${name ?: "the file"}"
         }.onFailure { status = "Can't open that file: ${it.message}" }
     }
@@ -885,8 +908,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
                 scope.launch {
                     runCatching { tools.newScore(spec) }
                         .onSuccess { t ->
-                            replaceText(t)
-                            setFile(ScoreFiles.Current(null, null, null))
+                            openDocument(t, ScoreFiles.Current(null, null, null))
                             status = "New score: tap a rest and Enter notes to fill it."
                         }
                         .onFailure { status = "Can't make that score: ${it.message}" }
@@ -1019,12 +1041,34 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
         )
     }
 
+    // ---- Typing in the source: one way in, for the keyboard and the coding keys alike.
+    var editorFocused by remember { mutableStateOf(false) }
+    val imeVisible = WindowInsets.isImeVisible
+    fun setSource(v: TextFieldValue) {
+        val moved = v.selection != text.selection
+        if (v.text != text.text) range = emptyList() // typed: the offsets have moved
+        text = v
+        if (moved) selectFromCursor(v)
+    }
+    fun typeInSource(s: String) {
+        val t = text
+        val start = minOf(t.selection.start, t.selection.end)
+        val end = maxOf(t.selection.start, t.selection.end)
+        setSource(TextFieldValue(t.text.replaceRange(start, end, s), TextRange(start + s.length)))
+    }
+    fun moveCursor(by: Int) {
+        val at = (text.selection.end + by).coerceIn(0, text.text.length)
+        setSource(text.copy(selection = TextRange(at)))
+    }
+
     // ---- The keypad: every command in one catalog, on pages the user arranges.
     var keypad by remember { mutableStateOf(KeypadConfig.load(context)) }
     fun setKeypad(c: KeypadConfig) { keypad = c; KeypadConfig.save(context, c) }
     var keypadPage by rememberSaveable { mutableStateOf("notes") }
     var showKeypad by rememberSaveable { mutableStateOf(true) }
     var showSource by rememberSaveable { mutableStateOf(false) }
+    /** The source is being typed with the on-screen keyboard: the coding keys show above it. */
+    val codeKeys = showSource && editorFocused && imeVisible
     var showPiano by rememberSaveable { mutableStateOf(true) }
     var arranging by remember { mutableStateOf(false) }
     /** The page and slot being filled while arranging. */
@@ -1113,6 +1157,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
             if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Respell) } else edit { src, off -> tools.respell(src, off) }
         }
         c("transpose", "Transpose… (the selection, or the whole score)", "Pitch", label("⇅", 20)) { transposing = true }
+        c("delete", "Delete (like Cut, but the clipboard is left as it is)", "Edit", Glyph.Vector(Glyphs.Delete), hasNote) { deleteSel() }
         for (n in 1..4) {
             c("voice.$n", "Voice $n (new notes go into it, on a staff with several voices)", "Voices", label("$n", 17),
                 { voicesHere.size >= n }, { voicesHere.getOrNull(n - 1)?.let { v -> selected?.sameVoiceAs(v) } == true },
@@ -1187,9 +1232,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
         val docked = keypad.pages.filter { p -> keypad.floating.none { it.pageId == p.id } }
         val dockedPage = docked.firstOrNull { it.id == keypadPage } ?: docked.firstOrNull()
         val cell = (
-            if (side) minOf(60.dp, maxWidth * 0.42f / keypad.columns, (maxHeight - 140.dp) / (keypad.rows + 1))
-            else minOf(60.dp, (maxWidth - 8.dp) / keypad.columns, maxHeight * 0.38f / (keypad.rows + 1))
-            ).coerceAtLeast(30.dp)
+            if (side) minOf(keypad.cell.dp, maxWidth * 0.42f / keypad.columns, (maxHeight - 140.dp) / (keypad.rows + 1))
+            else minOf(keypad.cell.dp, (maxWidth - 8.dp) / keypad.columns, maxHeight * 0.38f / (keypad.rows + 1))
+            ).coerceAtLeast(28.dp)
         val piano: @Composable () -> Unit = { PianoBar(onKey = { k -> keyboard.tap(k) }) }
         val topBar: @Composable () -> Unit = {
             FlowRow(
@@ -1205,11 +1250,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
                 IconTool(Glyphs.Cut, "Cut (delete, keeping a copy to paste)", selected != null) { copySelection(cut = true) }
                 IconTool(Glyphs.Copy, "Copy", selected != null) { copySelection(cut = false) }
                 IconTool(Glyphs.Paste, "Paste after the selected note", selected != null && clip != null, ::pasteClip)
-                IconTool(Glyphs.Delete, "Delete (the clipboard is left as it is)", selected != null) { deleteSel() }
                 Gap()
                     Box {
                         WithTooltip("File: new, open, save, share, import") { TextButton(onClick = { fileMenu = true }) {
-                            Text((file.name ?: "Untitled") + (if (modified) " •" else "") + " ▾", maxLines = 1)
+                            Text("File ▾", maxLines = 1) // the tab shows the name
                         } }
                         DropdownMenu(expanded = fileMenu, onDismissRequest = { fileMenu = false }) {
                             @Composable
@@ -1245,8 +1289,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
                                 ScoreFiles.share(context, out, "text/x-lilypond", out.name)
                             }
                             HorizontalDivider()
-                            Item("Sample: piano") { replaceText(SCORE_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
-                            Item("Sample: 15-page piece") { replaceText(LONG_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
+                            Item("Sample: piano") { openDocument(SCORE_SAMPLE, ScoreFiles.Current(null, null, null)) }
+                            Item("Sample: 15-page piece") { openDocument(LONG_SAMPLE, ScoreFiles.Current(null, null, null)) }
 
                         }
                     }
@@ -1259,7 +1303,6 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
                     val on = when (mode) { "notes" -> entering; "lyrics" -> lyricsMode; else -> !entering && !lyricsMode }
                     TextTool(label, tip, selected = on, fontSize = 14) { setMode(mode) }
                 }
-                TextTool("+…", "Add… (search all the notation: marks, clefs, repeats…)", fontSize = 15) { catalogOpen = true }
                 Gap()
                 error?.let { e -> TextTool("⚠ Error", "Go to the error in the source", fontSize = 14) { jumpTo(e) } }
                 Tool(onClick = ::togglePlay, enabled = midi != null || playback != null,
@@ -1394,21 +1437,35 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
             Box(Modifier.weight(1f).background(appColors.editor).verticalScroll(rememberScrollState()).padding(8.dp)) {
                 BasicTextField(
                     value = text,
-                    onValueChange = { v ->
-                        val moved = v.selection != text.selection
-                        if (v.text != text.text) range = emptyList() // typed: the offsets have moved
-                        text = v
-                        if (moved) selectFromCursor(v)
-                    },
+                    onValueChange = ::setSource,
                     textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
                     visualTransformation = highlighting,
                     // Password mode turns off word suggestions and learning (the text isn't hidden).
                     keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged { editorFocused = it.isFocused },
                 )
             }
           }
+        }
+        // Above the on-screen keyboard while the source is edited: the marks it hides away.
+        val codeBar: @Composable () -> Unit = {
+            // Two rows: on a tablet both fit without scrolling.
+            val half = (CODE_KEYS.size + 2 + 1) / 2
+            val keys: List<Pair<String, String>> = listOf("←" to "Cursor left", "→" to "Cursor right") + CODE_KEYS
+            Column(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                for (row in keys.chunked(half)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        for ((key, tip) in row) TextTool(key, tip, fontSize = 17) {
+                            when (key) { "←" -> moveCursor(-1); "→" -> moveCursor(+1); else -> typeInSource(key) }
+                        }
+                    }
+                }
+            }
         }
         val keypadPanel: @Composable (Modifier) -> Unit = { m ->
             Column(m.background(MaterialTheme.colorScheme.surfaceContainerLow).padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1428,6 +1485,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
                     },
                     onArrangeDone = { arranging = false },
                     onSettings = { keypadSettings = true },
+                    onAdd = { catalogOpen = true },
                 )
                 dockedPage?.let { p -> KeyGrid(p, keypad.columns, keypad.rows, commands, cell, arranging) { slot -> arrangeSlot = p.id to slot } }
                     ?: Text("All pages are floating", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(8.dp))
@@ -1442,15 +1500,16 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRe
                     if (showSource) editor(Modifier.weight(0.4f).fillMaxHeight())
                     Column(Modifier.weight(0.6f).fillMaxHeight()) {
                         score(Modifier.weight(1f).fillMaxWidth())
-                        if (entering && showPiano) piano()
+                        if (entering && showPiano && !codeKeys) piano()
                     }
-                    if (showKeypad) keypadPanel(Modifier.fillMaxHeight().verticalScroll(rememberScrollState()))
+                    if (showKeypad && !codeKeys) keypadPanel(Modifier.fillMaxHeight().verticalScroll(rememberScrollState()))
                 }
+                if (codeKeys) codeBar()
             } else {
                 score(Modifier.weight(1f).fillMaxWidth())
                 if (showSource) editor(Modifier.weight(0.6f).fillMaxWidth())
-                if (entering && showPiano) piano()
-                if (showKeypad) keypadPanel(Modifier.fillMaxWidth())
+                if (entering && showPiano && !codeKeys) piano()
+                if (codeKeys) codeBar() else if (showKeypad) keypadPanel(Modifier.fillMaxWidth())
             }
         }
         // Pages floating in their own windows, over everything.
@@ -1484,7 +1543,7 @@ private sealed interface Entry {
  * Undo and redo of edits, as whole texts: an edit (addLast) makes the
  * previous text undoable and forgets what could be redone.
  */
-private class UndoHistory {
+internal class UndoHistory {
     private val back = ArrayDeque<String>()
     private val forward = ArrayDeque<String>()
     /** Read in composition, so the buttons follow. */
@@ -2086,7 +2145,6 @@ private fun LyricsBar(
 }
 
 /** Where the source being edited is kept between sessions (in the app's files). */
-private const val DRAFT_FILE = "score-draft.ly"
 
 /** How long after a change the draft is saved. */
 private const val DRAFT_SAVE_DELAY_MS = 1000L
@@ -2119,6 +2177,17 @@ private const val VOICE_CHECK_DELAY_MS = 700L
 
 /** Above this many items in a range, the marks on all of them aren't looked up. */
 private const val MAX_MARKS_LOOKUPS = 40
+
+/** The coding keys: marks LilyPond needs that the on-screen keyboard hides away. */
+private val CODE_KEYS = listOf(
+    "\\" to "Backslash: commands (\\relative, \\clef…)", "{" to "Open brace: start of a music expression", "}" to "Close brace",
+    "<<" to "Simultaneous music starts (voices, staves)", ">>" to "Simultaneous music ends", "<" to "Chord starts", ">" to "Chord ends",
+    "[" to "Beam starts", "]" to "Beam ends", "(" to "Slur starts", ")" to "Slur ends", "~" to "Tie",
+    "'" to "Octave up", "," to "Octave down", "|" to "Bar check", "/" to "Slash (tuplet fractions, chord bass)",
+    "\"" to "Quote (strings, markup)", "#" to "Scheme value", "%" to "Comment", "^" to "Above (articulations, text)",
+    "_" to "Below (articulations, text)", "-" to "Neutral direction; articulation", "=" to "Assignment", "!" to "Forced accidental",
+    "." to "Dot", "*" to "Duration scaling (r1*4)", ":" to "Tremolo, chord modes", "$" to "Scheme expression",
+)
 
 /** The articulations on the keypad: what LilyTools.toggle calls each, its glyph, its name. */
 private val ARTICULATION_KEYS = listOf(
