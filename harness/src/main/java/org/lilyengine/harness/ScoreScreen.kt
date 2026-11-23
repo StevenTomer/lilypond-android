@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -517,6 +518,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 scope.launch {
                     try {
                         val imported = tools.importMidi(file, options)
+                        // Until the whole score is engraved (minutes, for a big file), Play
+                        // plays the MIDI file itself.
+                        midi = file.copyTo(java.io.File(context.cacheDir, "import-playback.mid"), overwrite = true)
                         undo.addLast(text.text)
                         selectedOffset = null
                         selection = emptyList()
@@ -539,6 +543,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 scope.launch {
                     try {
                         val imported = tools.importMusicXml(file, options)
+                        midi = null // the old score's; Play waits for the whole score's
                         undo.addLast(text.text)
                         selectedOffset = null
                         selection = emptyList()
@@ -1079,14 +1084,19 @@ private object ScoreMapRational {
 private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItems: Int) {
     val g = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" } ?: selection.firstOrNull()
     val voices = remember(lookup) { lookup?.map?.grobs?.mapNotNull { it.voice }?.distinct()?.sorted().orEmpty() }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // One line, always: a taller line would move the score under the pen whenever the selection changes.
+    Row(
+        Modifier.fillMaxWidth().height(22.dp).padding(horizontal = 8.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         if (g == null) {
-            Text("Tap a note, or draw a box around notes with the pen.", fontSize = 13.sp, color = Color.Gray)
+            Text("Tap a note, or draw a box around notes with the pen.", fontSize = 13.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
             return@Row
         }
         if (rangeItems >= 2) {
             val inRange = selection.filter { it.type == "NoteHead" || it.type == "Rest" }
-            for (v in inRange.map { it.voice }.distinct()) Box(Modifier.padding(top = 3.dp).size(12.dp).background(voiceColor(v, voices)))
+            for (v in inRange.map { it.voice }.distinct()) Box(Modifier.size(12.dp).background(voiceColor(v, voices)))
             val heads = inRange.count { it.type == "NoteHead" }
             val rests = inRange.count { it.type == "Rest" }
             val voiceCount = inRange.map { it.voiceId }.distinct().size
@@ -1095,11 +1105,11 @@ private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItem
                     heads.takeIf { it > 0 }?.let { "$it note${if (it > 1) "s" else ""}" },
                     rests.takeIf { it > 0 }?.let { "$it rest${if (it > 1) "s" else ""}" },
                 ).joinToString(" and ") + " selected" + if (voiceCount > 1) ", in $voiceCount voices" else "",
-                fontSize = 13.sp,
+                fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             return@Row
         }
-        Box(Modifier.padding(top = 3.dp).size(12.dp).background(voiceColor(g.voice, voices)))
+        Box(Modifier.size(12.dp).background(voiceColor(g.voice, voices)))
         val parts = buildList {
             add(g.type)
             g.pitch?.let { add(it.name) }
@@ -1108,7 +1118,7 @@ private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItem
             g.moment?.let { add("at $it") }
             g.origin?.let { add("line ${it.line}, column ${it.char + 1}") }
         }
-        Text(parts.joinToString(" · "), fontSize = 13.sp)
+        Text(parts.joinToString(" · "), fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

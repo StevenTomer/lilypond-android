@@ -83,7 +83,12 @@ class ScoreViewTest {
                 h.pitch!!.notename to h.pitch!!.octave, p.step to p.octave,
             )
             assertEquals(y, p.yPt, p.halfSpacePt / 2) // drawn where the note head is
+            // The drag label spells notes as LilyPond does: in G major, every note of the sample.
+            assertEquals(h.pitch!!.name, lookup.nameAfterSteps(h, 0))
         }
+        // An e moved up a step is f sharp, from the key signature LilyPond printed.
+        val e = heads.first { it.pitch!!.notename == 2 && it.pitch!!.alteration == "0" }
+        assertTrue(lookup.nameAfterSteps(e, 1)!!.startsWith("fis"))
         assertEquals(2, lookup.grobsOnPage(1).count { it.type == "StaffSymbol" })
     }
 

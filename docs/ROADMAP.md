@@ -256,6 +256,26 @@ This plan covers the pieces needed before the editor and the editor phases after
     own staff, and the staccato. A 14th self-test check uses the same sample
     (`assets/samples/two-voices.musicxml`). There is also 1 Python test.
 
+- **0.17.0, fixes from the second tablet test:**
+  - Dragging a note: you couldn't see where it would land, since a finger or the pen
+    hides the note and one step was a few pixels.
+    - A large pitch label (e.g. "fis''") now floats 70 dp above the pen or finger,
+      spelled for the key signature LilyPond printed. The score map now records each
+      KeySignature's alterations (`keyAlterations`), read by `ScoreLookup.keyAt` and
+      `nameAfterSteps`.
+    - The ghost note gets ledger lines, and each step gives a light tick.
+    - A step needs at least 12 dp of pen movement or 18 dp of finger movement,
+      whatever the zoom.
+  - Entering notes on the staff between two notes was hard or impossible. In Enter
+    notes, a tap (or hover) picks a note only when it is right on a note head or
+    rest; anywhere else on the staff is a place for a new note, slurs and hairpins
+    included.
+  - The selection info line is now always one line, so selecting no longer moves the
+    score under the pen.
+  - Play after a MIDI import plays the MIDI file itself until the whole score has
+    been engraved, which takes minutes for a big file. After a MusicXML import, the
+    previous score's MIDI is dropped.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

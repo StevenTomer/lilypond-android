@@ -41,12 +41,13 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
      * by up to [slop] staff spaces still counts, since note heads are small
      * under a finger. When several objects are in reach, the closest wins;
      * among overlapping ones, note heads and rests beat articulations and
-     * slurs, and smaller boxes beat larger ones.
+     * slurs, and smaller boxes beat larger ones. [types] limits it to those
+     * kinds of object (note entry wants only notes and rests).
      */
-    fun objectAt(page: Int, xPt: Double, yPt: Double, slop: Double = 0.6): Grob? {
+    fun objectAt(page: Int, xPt: Double, yPt: Double, slop: Double = 0.6, types: Collection<String> = SELECTABLE): Grob? {
         val (x, y) = toStaffSpaces(xPt, yPt)
         return grobsOnPage(page)
-            .filter { it.origin != null && it.type in SELECTABLE }
+            .filter { it.origin != null && it.type in types }
             .map { it to distance(it, x, y) }
             .filter { it.second <= slop }
             .minWithOrNull(
@@ -103,21 +104,6 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
         val top = g.linePositions?.maxOrNull() ?: 4.0
         // The top line is at the top of the box (lines are thin).
         val position = ((r[1] - yPt) / half + top).roundToInt()
-        // A note head belongs to the staff that puts its staff position where it
-        // is drawn (not simply the nearest: a note on ledger lines between two
-        // staves can be nearer the other one).
-        val staves = onPage.filter { it.type == "StaffSymbol" }.map { it to pageRect(it) }
-        fun staffOf(h: Grob): Grob? {
-            val hr = pageRect(h)
-            val cx = (hr[0] + hr[2]) / 2
-            val cy = (hr[1] + hr[3]) / 2
-            val pos = h.staffPosition ?: return null
-            return staves.filter { (_, sr) -> cx >= sr[0] && cx <= sr[2] }
-                .minByOrNull { (st, sr) ->
-                    val h2 = (st.staffSpace ?: 1.0) * pointsPerStaffSpace / 2
-                    abs(sr[1] + ((st.linePositions?.maxOrNull() ?: 4.0) - pos) * h2 - cy)
-                }?.first
-        }
         val head = onPage.filter { h ->
             h.type == "NoteHead" && h.pitch != null && h.staffPosition != null && staffOf(h) === g
         }.minByOrNull { h -> pageRect(h).let { hr -> abs((hr[0] + hr[2]) / 2 - xPt) } } ?: return null
@@ -125,6 +111,53 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
         val diatonic = p.octave * 7 + p.notename + (position - head.staffPosition!!)
         return StaffPitch(g, position, Math.floorMod(diatonic, 7), Math.floorDiv(diatonic, 7), xPt, r[1] + (top - position) * half)
             .also { it.halfSpacePt = half; it.reference = head }
+    }
+
+    /**
+     * The staff a note head or rest is on: the one that puts its staff
+     * position where it is drawn (not simply the nearest: a note on ledger
+     * lines between two staves can be nearer the other one).
+     */
+    fun staffOf(h: Grob): Grob? {
+        val hr = pageRect(h)
+        val cx = (hr[0] + hr[2]) / 2
+        val cy = (hr[1] + hr[3]) / 2
+        val pos = h.staffPosition ?: return null
+        return grobsOnPage(h.page).filter { it.type == "StaffSymbol" }.map { it to pageRect(it) }
+            .filter { (_, sr) -> cx >= sr[0] && cx <= sr[2] }
+            .minByOrNull { (st, sr) ->
+                val half = (st.staffSpace ?: 1.0) * pointsPerStaffSpace / 2
+                abs(sr[1] + ((st.linePositions?.maxOrNull() ?: 4.0) - pos) * half - cy)
+            }?.first
+    }
+
+    /**
+     * The key signature in effect on [staff] at [xPt]: the alteration (in
+     * whole tones) of each step it changes, from the last one printed before
+     * that point on the staff's line. Empty for C major or A minor.
+     */
+    fun keyAt(staff: Grob, xPt: Double): Map<Int, Double> {
+        val sr = pageRect(staff)
+        return grobsOnPage(staff.page)
+            .filter { it.type == "KeySignature" && it.keyAlterations != null }
+            .map { it to pageRect(it) }
+            .filter { (_, kr) -> kr[0] <= xPt && (kr[1] + kr[3]) / 2 in sr[1] - 1..sr[3] + 1 }
+            .maxByOrNull { (_, kr) -> kr[0] }?.first?.keyAlterations.orEmpty()
+    }
+
+    /**
+     * The name (as LilyPond writes it, absolute: "fis''") of the note [steps]
+     * scale steps above note head [g] (below if negative), spelled for the
+     * key signature there, as moving it by dragging does.
+     */
+    fun nameAfterSteps(g: Grob, steps: Int): String? {
+        val p = g.pitch ?: return null
+        val diatonic = p.octave * 7 + p.notename + steps
+        val step = Math.floorMod(diatonic, 7)
+        val octave = Math.floorDiv(diatonic, 7)
+        val staff = staffOf(g)
+        val alter = staff?.let { keyAt(it, pageRect(g)[0].toDouble())[step] } ?: 0.0
+        return pitchName(step, alter, octave)
     }
 
     /** All printed objects made by the same piece of source (a note's head, accidental, dots). */
@@ -191,6 +224,22 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
     }
 
     companion object {
+        /** A pitch as LilyPond writes it (Dutch names, absolute octave marks): step 0 = c, octave 0 = from middle C up. */
+        fun pitchName(step: Int, alterWholeTones: Double, octave: Int): String {
+            val suffix = when ((alterWholeTones * 2).roundToInt()) {
+                2 -> "isis"; 1 -> "is"; -1 -> "es"; -2 -> "eses"; else -> ""
+            }
+            val letter = "cdefgab"[step]
+            val name = when {
+                suffix == "es" && letter == 'e' -> "es"
+                suffix == "es" && letter == 'a' -> "as"
+                suffix == "eses" && letter == 'e' -> "eses"
+                suffix == "eses" && letter == 'a' -> "asas"
+                else -> "$letter$suffix"
+            }
+            return name + if (octave >= 0) "'".repeat(octave + 1) else ",".repeat(-octave - 1)
+        }
+
         private const val MAX_NOTE_LENGTH = 8.0 // a maxima
 
         /**

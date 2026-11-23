@@ -57,6 +57,8 @@ class ScoreMap(
         /** StaffSymbol only: line positions in half staff spaces. */
         val linePositions: List<Double>?,
         val staffSpace: Double?,
+        /** KeySignature only: the alteration (in whole tones, 1/2 = sharp) of each step (0 = c) it changes. */
+        val keyAlterations: Map<Int, Double>? = null,
     ) {
         val momentValue: Double? get() = moment?.let(::parseRational)
     }
@@ -119,6 +121,10 @@ class ScoreMap(
                     List(a.length()) { a.getDouble(it) }
                 },
                 staffSpace = if (g.isNull("staffSpace")) null else g.getDouble("staffSpace"),
+                keyAlterations = g.optJSONArray("keyAlterations")?.let { a ->
+                    List(a.length()) { a.getJSONObject(it) }
+                        .associate { it.getInt("step") to parseRational(it.getString("alteration")) }
+                },
             )
         }
 

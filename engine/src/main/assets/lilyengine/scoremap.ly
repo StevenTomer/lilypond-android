@@ -174,7 +174,14 @@
                    (linePositions . ,(and (eq? name 'StaffSymbol)
                                           (ly:grob-property grob 'line-positions #f)))
                    (staffSpace . ,(and (eq? name 'StaffSymbol)
-                                       (ly:staff-symbol-staff-space grob))))))
+                                       (ly:staff-symbol-staff-space grob)))
+                   ;; A key signature's sharps and flats: step (0 = c) and alteration.
+                   (keyAlterations
+                    . ,(and (eq? name 'KeySignature)
+                            (map (lambda (entry)
+                                   (let ((step (if (pair? (car entry)) (cdar entry) (car entry))))
+                                     `((step . ,step) (alteration . ,(number->string (cdr entry))))))
+                                 (ly:grob-property grob 'alteration-alist '())))))))
            (set! lilyengine:records (cons fields lilyengine:records))))))
 
 %% Wrap the PostScript backend's grob-cause.

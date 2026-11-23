@@ -50,6 +50,16 @@ class ScoreLookupTest {
     }
 
     @Test
+    fun pitchNamesAsLilyPondWritesThem() {
+        assertEquals("c'", ScoreLookup.pitchName(0, 0.0, 0))
+        assertEquals("fis''", ScoreLookup.pitchName(3, 0.5, 1))
+        assertEquals("bes", ScoreLookup.pitchName(6, -0.5, -1))
+        assertEquals("es,", ScoreLookup.pitchName(2, -0.5, -2))
+        assertEquals("as'", ScoreLookup.pitchName(5, -0.5, 0))
+        assertEquals("cisis'''", ScoreLookup.pitchName(0, 1.0, 2))
+    }
+
+    @Test
     fun tapOnANoteHeadFindsIt() {
         val g = head("c''", "1")
         val (x, y) = centre(g)

@@ -51,6 +51,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.nativeCanvas
 import kotlinx.coroutines.delay
 import org.lilyengine.engine.ScoreMap.Grob
 import kotlin.math.roundToInt
@@ -191,8 +193,10 @@ fun ScoreView(
     /** A box being drawn with the pen: its page, and its corners in points. */
     var lasso by remember { mutableStateOf<Pair<Int, Rect>?>(null) }
     val haptics = LocalHapticFeedback.current
-    /** A note head being dragged with the pen, and by how many staff positions. */
+    /** A note head being dragged, and by how many staff positions. */
     var drag by remember { mutableStateOf<Pair<Grob, Int>?>(null) }
+    /** Where the pen or finger is during a drag, in the page's pixels: the pitch label floats above it. */
+    var dragPointer by remember { mutableStateOf(Offset.Zero) }
     val voices = remember(lookup) {
         lookup?.map?.grobs?.mapNotNull { it.voice }?.distinct()?.sorted().orEmpty()
     }
@@ -239,7 +243,9 @@ fun ScoreView(
                                 val k = wPt / size.width
                                 val x = (off.x * k).toDouble()
                                 val y = (off.y * k).toDouble()
-                                val g = lookup?.objectAt(page, x, y)
+                                // In note entry, only a tap right on a note picks it; anywhere else on
+                                // the staff is a place for a new note, even close to other notes.
+                                val g = if (currentOnStaffTap != null) lookup?.objectAt(page, x, y, 0.0, ENTRY_TARGETS) else lookup?.objectAt(page, x, y)
                                 val place = if (g == null) currentOnStaffTap?.let { lookup?.pitchAt(page, x, y) } else null
                                 if (place != null) currentOnStaffTap?.invoke(place) else currentOnTap(g)
                             }
@@ -295,9 +301,13 @@ fun ScoreView(
                                 }
                                 state.noteDrag = true
                                 down.consume()
-                                // Half a staff space (one line or space) in pixels.
-                                val stepPx = ((g.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2 / k).toFloat()
+                                // One step (a line or space) per half staff space of movement, but
+                                // never less than a comfortable distance: at small zooms a step is a
+                                // few pixels, too fine to aim. The ghost still sits on the staff.
+                                val halfSpacePx = ((lookup.staffOf(g)?.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2 / k).toFloat()
+                                val stepPx = maxOf(halfSpacePx, (if (pen) PEN_STEP else FINGER_STEP).toPx())
                                 drag = g to 0
+                                dragPointer = down.position
                                 // Summed from each move rather than measured from the first
                                 // touch: selecting the note can shift the page under the finger.
                                 var dy = 0f
@@ -307,7 +317,12 @@ fun ScoreView(
                                             .firstOrNull { it.id == down.id } ?: break
                                         c.consume() // not a scroll, pan or tap
                                         dy += c.position.y - c.previousPosition.y
-                                        drag = g to -(dy / stepPx).roundToInt()
+                                        dragPointer = c.position
+                                        val steps = -(dy / stepPx).roundToInt()
+                                        if (steps != drag?.second) {
+                                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) // a tick per step
+                                        }
+                                        drag = g to steps
                                         if (!c.pressed) break
                                     }
                                     val steps = drag?.second ?: 0
@@ -329,7 +344,10 @@ fun ScoreView(
                                         c.pressed -> hover
                                         else -> {
                                             val k = wPt / size.width
-                                            lookup?.objectAt(page, (c.position.x * k).toDouble(), (c.position.y * k).toDouble())
+                                            val hx = (c.position.x * k).toDouble()
+                                            val hy = (c.position.y * k).toDouble()
+                                            if (currentOnStaffTap != null) lookup?.objectAt(page, hx, hy, 0.0, ENTRY_TARGETS)
+                                            else lookup?.objectAt(page, hx, hy)
                                         }
                                     }
                                     ghost = when {
@@ -363,12 +381,27 @@ fun ScoreView(
                                 drawRect(color, o, s, style = Stroke(width = 2.dp.toPx()))
                             }
                             drag?.takeIf { it.first.page == page }?.let { (g, steps) ->
-                                // A ghost note head where the note would go.
+                                // A ghost note head where the note would go, with ledger lines off the staff.
                                 val (o, sz) = box(g, 0.1f)
-                                val dy = -steps * ((g.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2).toFloat() * px
+                                val staff = lookup.staffOf(g)
+                                val half = ((staff?.staffSpace ?: 1.0) * lookup.pointsPerStaffSpace / 2).toFloat() * px
+                                val dy = -steps * half
                                 val color = voiceColor(g.voice, voices)
+                                val target = (g.staffPosition ?: 0) + steps
+                                val top = (staff?.linePositions?.maxOrNull() ?: 4.0).toInt()
+                                val bottom = (staff?.linePositions?.minOrNull() ?: -4.0).toInt()
+                                val cx = o.x + sz.width / 2
+                                val cy = o.y + sz.height / 2 + dy
+                                for (l in ledgerLines(target, top, bottom)) {
+                                    val ly = cy + (target - l) * half
+                                    drawLine(color, Offset(cx - 2.2f * half, ly), Offset(cx + 2.2f * half, ly), strokeWidth = 1.5.dp.toPx())
+                                }
                                 drawOval(color.copy(alpha = 0.5f), o.copy(y = o.y + dy), sz)
                                 drawOval(color, o.copy(y = o.y + dy), sz, style = Stroke(width = 2.dp.toPx()))
+                                // The pitch it would be, large, above the pen or finger (which hide the note).
+                                lookup.nameAfterSteps(g, steps)?.let { name ->
+                                    drawPitchLabel(name, Offset(dragPointer.x, dragPointer.y - LABEL_LIFT.toPx()), color)
+                                }
                                 // A ring around the grabbed note: the drag has started.
                                 drawCircle(
                                     color,
@@ -385,12 +418,7 @@ fun ScoreView(
                                 val color = Color(0xFF3F51B5)
                                 val top = (p.staff.linePositions?.maxOrNull() ?: 4.0).toInt()
                                 val bottom = (p.staff.linePositions?.minOrNull() ?: -4.0).toInt()
-                                val ledgers = when {
-                                    p.position > top + 1 -> (top + 2..p.position step 2)
-                                    p.position < bottom - 1 -> (p.position..bottom - 2).filter { (it - bottom) % 2 == 0 }
-                                    else -> emptyList()
-                                }
-                                for (l in ledgers) {
+                                for (l in ledgerLines(p.position, top, bottom)) {
                                     val ly = cy + (p.position - l) * half
                                     drawLine(color, Offset(cx - 2.2f * half, ly), Offset(cx + 2.2f * half, ly), strokeWidth = 1.5.dp.toPx())
                                 }
@@ -482,6 +510,41 @@ private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.pinchAnd
         } while (event.changes.any { it.pressed })
     }
 }
+
+/** The ledger lines (staff positions) a note at [position] needs, for a staff from [bottom] to [top]. */
+private fun ledgerLines(position: Int, top: Int, bottom: Int): List<Int> = when {
+    position > top + 1 -> (top + 2..position step 2).toList()
+    position < bottom - 1 -> (position..bottom - 2).filter { Math.floorMod(it - bottom, 2) == 0 }
+    else -> emptyList()
+}
+
+/** A pitch name in large type on a rounded label centred at [at] (kept on the page). */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPitchLabel(name: String, at: Offset, color: Color) {
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = LABEL_TEXT.toPx()
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        this.color = android.graphics.Color.WHITE
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+    val w = paint.measureText(name) + 24.dp.toPx()
+    val h = LABEL_TEXT.toPx() * 1.5f
+    val x = at.x.coerceIn(w / 2, size.width - w / 2)
+    val y = at.y.coerceAtLeast(h / 2)
+    drawRoundRect(color, Offset(x - w / 2, y - h / 2), Size(w, h), androidx.compose.ui.geometry.CornerRadius(h / 2))
+    drawContext.canvas.nativeCanvas.drawText(name, x, y - (paint.ascent() + paint.descent()) / 2, paint)
+}
+
+/** What a tap picks in note entry, and only right on it: the rest of the staff is for new notes. */
+private val ENTRY_TARGETS = setOf("NoteHead", "Rest")
+
+/** The least movement for one step of a dragged note, with the pen and with a finger. */
+private val PEN_STEP = 12.dp
+private val FINGER_STEP = 18.dp
+
+/** How high above the pen or finger the pitch label floats while dragging. */
+private val LABEL_LIFT = 70.dp
+
+private val LABEL_TEXT = 26.sp
 
 /** How far from a selected note head a finger can be and still grab it. */
 private val FINGER_REACH = 24.dp
