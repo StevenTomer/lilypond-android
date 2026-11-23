@@ -37,7 +37,11 @@ class EngineFeaturesTest {
         val moments = r.scoreMap!!.grobs.filter { it.type == "NoteHead" }.mapNotNull { it.momentValue }
         assertTrue(moments.isNotEmpty())
         assertTrue("moments ${moments.min()}..${moments.max()}", moments.all { it >= 20.0 && it < 23.0 })
-        assertTrue("window ${r.elapsedMillis} ms vs full ${full.elapsedMillis} ms", r.elapsedMillis < full.elapsedMillis)
+        // Far less engraved (3 of 40 bars). Not timed: on a slow shared CI emulator a
+        // small render's time is mostly startup, and the two can come out level.
+        val fullHeads = full.scoreMap!!.grobs.count { it.type == "NoteHead" }
+        assertTrue("window ${moments.size} vs full $fullHeads note heads", moments.size * 4 < fullHeads)
+        android.util.Log.i("EngineFeaturesTest", "window ${r.elapsedMillis} ms, full ${full.elapsedMillis} ms")
         // No warnings or errors from the windowing itself.
         assertTrue(r.log, r.diagnostics.isEmpty())
     }
