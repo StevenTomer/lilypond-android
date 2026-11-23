@@ -226,8 +226,23 @@ def transpose(text, start, end, from_pitch, to_pitch):
         octave = s[n:].count("'") - s[n:].count(",")
         return ly.pitch.Pitch(note, alter, octave)
     t = ly.pitch.transpose.Transposer(parse(from_pitch), parse(to_pitch))
+    whole = start <= 0 and end < 0
+    if not whole:
+        # Part of the music: the notes in it move by the interval, all others
+        # must sound as before (in \relative, the note after the part would
+        # otherwise follow the moved ones).
+        stop = len(text) if end < 0 else end
+        desired = []
+        for n in notes(text):
+            if start <= n.pos < stop:
+                p = ly.pitch.Pitch(n.note, n.alter, n.octave)
+                t.transpose(p)
+                desired.append((p.note, p.alter, p.octave))
+            else:
+                desired.append(n.key())
     ly.pitch.transpose.transpose(cursor, t)
-    return doc.plaintext()
+    out = doc.plaintext()
+    return out if whole else _fix_octaves(out, desired)
 
 
 def rel2abs(text):

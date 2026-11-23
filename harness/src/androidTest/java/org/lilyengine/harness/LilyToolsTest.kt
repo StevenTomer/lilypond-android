@@ -223,6 +223,18 @@ class LilyToolsTest {
     }
 
     @Test
+    fun transposePartOfTwoVoices() = runBlocking {
+        // Voice 2's first bar up a major second; everything else as before.
+        val start = POLY_SAMPLE.indexOf("c,2")
+        val end = POLY_SAMPLE.indexOf(" } >>")
+        val after = heads(tools.transpose(POLY_SAMPLE, "c", "d", start, end).applyTo(POLY_SAMPLE))
+        val before = heads(POLY_SAMPLE)
+        assertEquals(listOf("d'", "a'"), after["2"])
+        assertEquals(before["1"], after["1"])
+        assertEquals(before[""], after[""])
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

@@ -495,5 +495,24 @@ class ChordsAndSpelling(unittest.TestCase):
         self.assertEqual(out, "{ des'4 d' dis' }")
 
 
+
+class TransposeParts(unittest.TestCase):
+    def test_part_of_relative_music_leaves_the_rest_sounding_the_same(self):
+        src = "\\relative c'' { c4 d e f | g a b c }"
+        out = e.transpose(src, src.index("c4"), src.index("| g"), "c", "d")
+        self.assertEqual(absolute(out)[1:5], [(1, 0, 2), (2, 0, 2), (3, 0.5, 2), (4, 0, 2)])
+        self.assertEqual(absolute(out)[5:], absolute(src)[5:])
+
+    def test_down_a_tone(self):
+        src = "{ c'4 e' }"
+        out = e.transpose(src, 0, -1, "c", "bes,")
+        self.assertEqual(out, "{ bes4 d' }")
+
+    def test_whole_text_with_key(self):
+        src = "\\relative c' { \\key c \\major c4 e g c }"
+        out = e.transpose(src, 0, -1, "c", "d")
+        self.assertIn("\\key d \\major", out)
+
+
 if __name__ == "__main__":
     unittest.main()

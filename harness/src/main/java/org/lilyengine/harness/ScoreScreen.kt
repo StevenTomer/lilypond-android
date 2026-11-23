@@ -176,6 +176,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     /** The last whole render's PDF, copied out for sharing (renders delete their own files). */
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
+    var transposing by remember { mutableStateOf(false) }
     /** Puts a new text in the editor as one undoable step, dropping selection and range. */
     fun replaceText(newText: String) {
         undo.addLast(text.text)
@@ -625,6 +626,41 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         )
     }
 
+    if (transposing) {
+        // The range, else the selected note or chord, else everything.
+        val sel = range.ifEmpty { listOfNotNull(selectedOffset) }.filter { it <= text.text.length }
+        val part = if (sel.isEmpty()) null else sel.min() to SourcePositions.tokenEnd(text.text, sel.max())
+        TransposeDialog(
+            what = when {
+                range.size >= 2 -> "the selected notes"
+                selectedOffset != null -> "the selected note"
+                else -> "the whole score"
+            },
+            onDismiss = { transposing = false },
+            onTranspose = { to ->
+                transposing = false
+                if (busy) return@TransposeDialog
+                busy = true
+                scope.launch {
+                    try {
+                        val before = text.text
+                        val e = if (part == null) tools.transpose(before, "c", to) else tools.transpose(before, "c", to, part.first, part.second)
+                        if (!e.isEmpty) {
+                            undo.addLast(before)
+                            // Note names change length (c -> des): the old offsets no longer fit.
+                            range = emptyList(); selectedOffset = null; selection = emptyList()
+                            text = TextFieldValue(e.applyTo(before))
+                        }
+                    } catch (ex: LilyTools.EditException) {
+                        status = "Can't transpose: ${ex.message}"
+                    } finally {
+                        busy = false
+                    }
+                }
+            },
+        )
+    }
+
     musicXmlToImport?.let { file ->
         MusicXmlImportDialog(
             onDismiss = { musicXmlToImport = null },
@@ -810,6 +846,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Respell) }
                             else edit { src, off -> tools.respell(src, off) }
                         },
+                        onTranspose = { transposing = true },
                         onAddVoice = ::addVoice,
                         inVoice = selected?.voiceId?.isNotEmpty() == true,
                         onRemoveVoice = {
@@ -940,6 +977,57 @@ private class Playback private constructor(
         }
     }
 }
+
+/** Transposing by an interval: up or down, from a minor second to an octave. */
+@Composable
+private fun TransposeDialog(what: String, onDismiss: () -> Unit, onTranspose: (toPitch: String) -> Unit) {
+    var up by remember { mutableStateOf(true) }
+    var interval by remember { mutableIntStateOf(0) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Transpose $what") },
+        text = {
+            Column {
+                Row {
+                    for ((label, value) in listOf("Up" to true, "Down" to false)) {
+                        Row(Modifier.clickable { up = value }.padding(end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = up == value, onClick = { up = value })
+                            Text(label)
+                        }
+                    }
+                }
+                Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
+                    INTERVALS.forEachIndexed { i, (name, _, _) ->
+                        Row(Modifier.fillMaxWidth().clickable { interval = i }, verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = interval == i, onClick = { interval = i })
+                            Text(name)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onTranspose(INTERVALS[interval].let { (_, upTo, downTo) -> if (up) upTo else downTo }) }) { Text("Transpose") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Intervals for transposing: name, and where c goes up and down (as LilyPond pitches). */
+private val INTERVALS = listOf(
+    Triple("Minor second", "des", "b,"),
+    Triple("Major second", "d", "bes,"),
+    Triple("Minor third", "es", "a,"),
+    Triple("Major third", "e", "as,"),
+    Triple("Perfect fourth", "f", "g,"),
+    Triple("Augmented fourth", "fis", "ges,"),
+    Triple("Perfect fifth", "g", "f,"),
+    Triple("Minor sixth", "as", "e,"),
+    Triple("Major sixth", "a", "es,"),
+    Triple("Minor seventh", "bes", "d,"),
+    Triple("Major seventh", "b", "des,"),
+    Triple("Octave", "c'", "c,"),
+)
 
 /** Options for musicxml2ly. */
 @Composable
@@ -1223,6 +1311,7 @@ private fun EditBar(
     onDuration: (String) -> Unit,
     onDot: () -> Unit,
     onDelete: () -> Unit,
+    onTranspose: () -> Unit,
     onAddVoice: () -> Unit,
     /** The selection is in one of several voices, so its voice can be removed. */
     inVoice: Boolean,
@@ -1245,6 +1334,7 @@ private fun EditBar(
         for (d in listOf("1", "2", "4", "8", "16")) B(d, enabled) { onDuration(d) }
         B("Dot", enabled, onDot)
         B("Delete", enabled, onDelete)
+        B("Transpose…", true, onTranspose)
         B("Add voice", enabled, onAddVoice)
         B("Remove voice", enabled && inVoice, onRemoveVoice)
         B("Undo", canUndo, onUndo)
