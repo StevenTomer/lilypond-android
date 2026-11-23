@@ -182,6 +182,26 @@ class LilyToolsTest {
     }
 
     @Test
+    fun midiImportOfChosenTracks() = runBlocking {
+        // The piano sample's MIDI has a track per staff.
+        val r = engine.render(SCORE_SAMPLE)
+        assertTrue(r.log, r.success)
+        // (copied: the next render deletes this one's files)
+        val midi = r.midi.single().copyTo(java.io.File(context.cacheDir, "tracks-test.mid"), overwrite = true)
+        val tracks = tools.midiTracks(midi)
+        assertEquals(tracks.toString(), 2, tracks.size)
+        assertTrue(tracks.none { it.drums })
+        fun staves(text: String) = runBlocking {
+            val back = engine.render(text)
+            assertTrue(back.log, back.success)
+            back.scoreMap!!.grobs.filter { it.type == "NoteHead" }.map { it.staff }.toSet().size
+        }
+        assertEquals(2, staves(tools.importMidi(midi).text))
+        val one = tools.importMidi(midi, LilyTools.MidiImportOptions(tracks = listOf(tracks.first().index)))
+        assertEquals(1, staves(one.text))
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

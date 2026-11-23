@@ -5,9 +5,13 @@
     <application
         android:label="LilyPond Test"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- Rotating, folding or attaching a keyboard resizes the screen instead of
+             recreating the activity, which would lose the score being edited,
+             its undo history, a render in progress, playback and the MIDI keyboard. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

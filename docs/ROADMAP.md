@@ -276,6 +276,23 @@ This plan covers the pieces needed before the editor and the editor phases after
     been engraved, which takes minutes for a big file. After a MusicXML import, the
     previous score's MIDI is dropped.
 
+- **0.18.0, more fixes from the second tablet test:**
+  - Rotating the tablet lost all work: the activity was recreated. It now handles
+    configuration changes itself (`android:configChanges`), so the score, undo, a
+    render in progress, playback and the MIDI keyboard all survive.
+  - The source is autosaved (`files/score-draft.ly`) a second after each change and
+    reopened at start, so switching tabs or Android closing the app in the background
+    doesn't lose it either.
+  - Play was silent after a big MIDI import. Play kept the last render's MIDI file,
+    which the engine deletes when the next render starts, and the error message was
+    overwritten by the progress line. The Score tab now copies the MIDI it plays.
+  - MIDI import can leave out tracks (`lilyimport.midi_tracks` and `_keep_tracks`,
+    which write a MIDI file with only the chosen tracks, plus the ones without notes,
+    for midi2ly). The import dialog lists each track's name, General MIDI instrument
+    family and number of notes; drum tracks start unticked, since midi2ly writes drums
+    as pitched notes. The second test file (13 tracks, 96 pages) took 691 s on the
+    tablet, so fewer staves are the biggest saving.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

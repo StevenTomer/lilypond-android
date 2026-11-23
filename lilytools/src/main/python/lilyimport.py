@@ -52,18 +52,123 @@ def _run(module_name, argv):
     return ok, log.strip()
 
 
+# General MIDI programs, by family, for naming tracks in the import dialog.
+_GM_FAMILIES = ["piano", "chromatic percussion", "organ", "guitar", "bass", "strings",
+                "ensemble", "brass", "reed", "pipe", "synth lead", "synth pad",
+                "synth effects", "ethnic", "percussive", "sound effects"]
+
+
+def _chunks(data):
+    """A Standard MIDI File's header fields and its chunks as (type, bytes)."""
+    if data[:4] != b"MThd":
+        raise ValueError("not a MIDI file")
+    length = int.from_bytes(data[4:8], "big")
+    fmt, ntracks, division = (int.from_bytes(data[8 + 2 * i:10 + 2 * i], "big") for i in range(3))
+    pos, chunks = 8 + length, []
+    while pos + 8 <= len(data):
+        kind = data[pos:pos + 4]
+        n = int.from_bytes(data[pos + 4:pos + 8], "big")
+        chunks.append((kind, data[pos + 8:pos + 8 + n]))
+        pos += 8 + n
+    return fmt, division, chunks
+
+
+def _track_info(track):
+    """Name, number of notes, channels and first program of one track."""
+    name, notes, channels, program = None, 0, set(), None
+    i, running = 0, 0
+    while i < len(track):
+        while track[i] & 0x80:  # delta time
+            i += 1
+        i += 1
+        if i >= len(track):
+            break
+        status = track[i]
+        if status == 0xFF:
+            kind = track[i + 1]
+            i += 2
+            n = 0
+            while track[i] & 0x80:
+                n = (n << 7) | (track[i] & 0x7F); i += 1
+            n = (n << 7) | track[i]; i += 1
+            if kind in (0x03, 0x04) and name is None:
+                name = track[i:i + n].decode("latin-1").strip() or None
+            i += n
+            continue
+        if status in (0xF0, 0xF7):
+            i += 1
+            n = 0
+            while track[i] & 0x80:
+                n = (n << 7) | (track[i] & 0x7F); i += 1
+            n = (n << 7) | track[i]; i += 1
+            i += n
+            continue
+        if status & 0x80:
+            running = status
+            i += 1
+        kind, channel = running & 0xF0, running & 0x0F
+        size = 1 if kind in (0xC0, 0xD0) else 2
+        data = track[i:i + size]
+        i += size
+        if kind == 0x90 and len(data) == 2 and data[1] > 0:
+            notes += 1
+            channels.add(channel)
+        elif kind == 0xC0 and program is None and data:
+            program = data[0]
+    return name, notes, channels, program
+
+
+def midi_tracks(midi_path):
+    """The tracks of a MIDI file, for choosing which to import: a list of
+    {index, name, notes, drums, instrument}. Tracks without notes (tempo,
+    time signatures) are always kept and not listed."""
+    with open(midi_path, "rb") as f:
+        _, _, chunks = _chunks(f.read())
+    out = []
+    for index, track in enumerate(c for kind, c in chunks if kind == b"MTrk"):
+        name, notes, channels, program = _track_info(track)
+        if notes == 0:
+            continue
+        drums = channels == {9}
+        out.append({"index": index, "name": name or "Track %d" % index, "notes": notes, "drums": drums,
+                    "instrument": "drums" if drums else (_GM_FAMILIES[program // 8] if program is not None else None)})
+    return out
+
+
+def _keep_tracks(midi_path, keep, out_path):
+    """Writes the MIDI file with only the tracks in `keep` (indices among
+    its tracks) and those without notes."""
+    with open(midi_path, "rb") as f:
+        fmt, division, chunks = _chunks(f.read())
+    tracks = [c for kind, c in chunks if kind == b"MTrk"]
+    chosen = [t for i, t in enumerate(tracks) if i in keep or _track_info(t)[1] == 0]
+    out = b"MThd" + (6).to_bytes(4, "big") + (1 if len(chosen) > 1 else fmt).to_bytes(2, "big") \
+        + len(chosen).to_bytes(2, "big") + division.to_bytes(2, "big")
+    for t in chosen:
+        out += b"MTrk" + len(t).to_bytes(4, "big") + t
+    with open(out_path, "wb") as f:
+        f.write(out)
+
+
 def midi_to_ly(midi_path, duration_quant=None, start_quant=None, key=None,
                tuplets=None, absolute=False, explicit_durations=False,
-               text_lyrics=False):
+               text_lyrics=False, tracks=None):
     """Converts a MIDI file to LilyPond text with midi2ly.
 
     duration_quant / start_quant: quantise note durations / starts to this
       note value, e.g. "16"; tuplets: allowed tuplet durations, e.g.
       ["8*2/3"]; key: "sharps:minor", e.g. "-3:1" for C minor (3 flats);
-      absolute: absolute pitches instead of \\relative.
+      absolute: absolute pitches instead of \\relative; tracks: the indices
+      (from midi_tracks) of the tracks to import, None for all.
     """
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.ly")
+        if tracks is not None:
+            if not tracks:
+                raise ValueError("no tracks chosen")
+            chosen = os.path.join(tmp, "chosen.mid")
+            _keep_tracks(midi_path, set(tracks), chosen)
+            midi_path = chosen
         argv = ["midi2ly", "--output", out]
         if duration_quant:
             argv += ["--duration-quant", str(duration_quant)]
@@ -135,6 +240,8 @@ def call(request_json):
     try:
         if op == "midi2ly":
             text, log = midi_to_ly(req.pop("path"), **req)
+        elif op == "midi_tracks":
+            return json.dumps({"tracks": midi_tracks(req["path"])})
         elif op == "musicxml2ly":
             text, log = musicxml_to_ly(req.pop("path"), **req)
         elif op == "convert_ly":

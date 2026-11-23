@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -85,6 +86,8 @@ import org.lilyengine.midi.MidiFile
 import org.lilyengine.midi.MidiPlayer
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.collectAsState
@@ -98,7 +101,25 @@ import androidx.compose.runtime.collectAsState
 @OptIn(FlowPreview::class)
 @Composable
 fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
-    var text by remember { mutableStateOf(TextFieldValue(SCORE_SAMPLE)) }
+    val appFiles = LocalContext.current.filesDir
+    val draftFile = remember { java.io.File(appFiles, DRAFT_FILE) }
+    /** The source being edited: the saved draft if there is one, else the sample. */
+    var text by remember {
+        mutableStateOf(TextFieldValue(runCatching { draftFile.readText() }.getOrNull()?.takeIf { it.isNotBlank() } ?: SCORE_SAMPLE))
+    }
+    // Saved a moment after each change, so switching tabs or Android closing the
+    // app in the background doesn't lose the work.
+    LaunchedEffect(text.text) {
+        delay(DRAFT_SAVE_DELAY_MS)
+        val t = text.text
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val tmp = java.io.File(draftFile.parentFile, "$DRAFT_FILE.tmp")
+                tmp.writeText(t)
+                tmp.renameTo(draftFile)
+            }
+        }
+    }
     var document by remember { mutableStateOf<ScoreDocument?>(null) }
     var lookup by remember { mutableStateOf<ScoreLookup?>(null) }
     /** The source the current score was rendered from; the map is stale once the text differs. */
@@ -217,6 +238,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         }
     }
 
+    /** A copy of [file] that later renders leave alone, for Play (older copies are removed). */
+    fun keepForPlayback(file: java.io.File): java.io.File {
+        val copy = java.io.File(context.cacheDir, "playback-${System.nanoTime()}.mid")
+        file.copyTo(copy)
+        context.cacheDir.listFiles { f -> f.name.startsWith("playback-") && f != copy }?.forEach { it.delete() }
+        return copy
+    }
+
     /** Shows a render's PDF and score map; returns false if it failed. */
     suspend fun show(r: LilyPondEngine.Result, source: String): Boolean {
         error = r.diagnostics.firstOrNull { it.severity == Diagnostic.Severity.ERROR }
@@ -284,7 +313,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 val r = renderWhole(source, if (lookup != null && renderedText == source) "Whole score" else "Rendering")
                 if (show(r, source)) {
                     lastFullMillis = r.elapsedMillis
-                    midi = r.midi.firstOrNull()
+                    // Copied out: the engine deletes a render's files when the next one starts,
+                    // which would leave Play with nothing to play.
+                    midi = r.midi.firstOrNull()?.let { keepForPlayback(it) }
                     status = "${document?.pageCount} page(s), ${r.elapsedMillis} ms" +
                         (error?.let { " — error on line ${it.line}: ${it.message}" } ?: "")
                 }
@@ -509,8 +540,16 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         focus.requestFocus()
     }
 
+    /** The tracks of the MIDI file picked for import, once read. */
+    var midiTracks by remember { mutableStateOf<List<LilyTools.MidiTrack>?>(null) }
+    LaunchedEffect(midiToImport) {
+        midiTracks = null
+        val f = midiToImport ?: return@LaunchedEffect
+        midiTracks = runCatching { tools.midiTracks(f) }.getOrElse { status = "Can't read the tracks: ${it.message}"; emptyList() }
+    }
     midiToImport?.let { file ->
         MidiImportDialog(
+            tracks = midiTracks,
             onDismiss = { midiToImport = null },
             onImport = { options ->
                 midiToImport = null
@@ -842,9 +881,16 @@ private val IMPORT_TYPES = arrayOf(
 
 /** Options for midi2ly: how finely to quantise, and whether triplets are allowed. */
 @Composable
-private fun MidiImportDialog(onDismiss: () -> Unit, onImport: (LilyTools.MidiImportOptions) -> Unit) {
+private fun MidiImportDialog(
+    /** The file's tracks with notes, or null while they are being read. */
+    tracks: List<LilyTools.MidiTrack>?,
+    onDismiss: () -> Unit,
+    onImport: (LilyTools.MidiImportOptions) -> Unit,
+) {
     var quant by remember { mutableStateOf("16") }
     var triplets by remember { mutableStateOf(false) }
+    /** The tracks to import: all but drums at first (midi2ly writes drums as pitched notes). */
+    var chosen by remember(tracks) { mutableStateOf(tracks.orEmpty().filter { !it.drums }.map { it.index }.toSet()) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Import MIDI") },
@@ -861,19 +907,40 @@ private fun MidiImportDialog(onDismiss: () -> Unit, onImport: (LilyTools.MidiImp
                     Checkbox(checked = triplets, onCheckedChange = { triplets = it })
                     Text("Allow triplets")
                 }
+                if (tracks == null) {
+                    Text("Reading the tracks…", fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
+                } else if (tracks.size > 1) {
+                    Text("Tracks (each becomes a staff; fewer engrave much faster):", modifier = Modifier.padding(top = 6.dp))
+                    Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {
+                        for (t in tracks) {
+                            Row(
+                                Modifier.fillMaxWidth().clickable { chosen = if (t.index in chosen) chosen - t.index else chosen + t.index },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(checked = t.index in chosen, onCheckedChange = { chosen = if (it) chosen + t.index else chosen - t.index })
+                                Text(
+                                    t.name + listOfNotNull(t.instrument, "${t.notes} notes").joinToString(", ", " (", ")"),
+                                    fontSize = 14.sp,
+                                )
+                            }
+                        }
+                    }
+                }
                 Text(
-                    "Uses LilyPond's midi2ly. Each track becomes a staff; notes that sound together become chords.",
+                    "Uses LilyPond's midi2ly. Notes that sound together in a track become chords.",
                     fontSize = 12.sp, color = Color.Gray,
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            TextButton(enabled = tracks != null && (tracks.size <= 1 || chosen.isNotEmpty()), onClick = {
                 val tupletUnit = (quant.toInt() / 2).coerceAtLeast(4)
+                val all = tracks.orEmpty().map { it.index }.toSet()
                 onImport(
                     LilyTools.MidiImportOptions(
                         durationQuant = quant, startQuant = quant,
                         tuplets = if (triplets) listOf("$tupletUnit*2/3", "${tupletUnit * 2}*2/3") else emptyList(),
+                        tracks = if (tracks.orEmpty().size <= 1 || chosen == all) null else chosen.sorted(),
                     ),
                 )
             }) { Text("Import") }
@@ -1013,6 +1080,12 @@ private const val LINES = "Lines"
 
 /** With a range selected, slurs and hairpins go over it (LilyTools.span's kinds). */
 private val RANGE_LINES = listOf("slur" to "slur ( )", "cresc" to "cresc <", "decresc" to "dim >")
+
+/** Where the source being edited is kept between sessions (in the app's files). */
+private const val DRAFT_FILE = "score-draft.ly"
+
+/** How long after a change the draft is saved. */
+private const val DRAFT_SAVE_DELAY_MS = 1000L
 
 /** How long after a change the voices are checked for equal lengths. */
 private const val VOICE_CHECK_DELAY_MS = 700L

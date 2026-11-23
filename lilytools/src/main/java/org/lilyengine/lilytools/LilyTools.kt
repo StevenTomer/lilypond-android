@@ -272,7 +272,36 @@ class LilyTools(context: Context) {
         val key: Pair<Int, Boolean>? = null,
         /** Absolute pitches instead of \relative. */
         val absolute: Boolean = false,
+        /** The tracks to import ([MidiTrack.index]); null for all. */
+        val tracks: List<Int>? = null,
     )
+
+    /** A track of a MIDI file with notes in it, for choosing which to import. */
+    data class MidiTrack(
+        val index: Int,
+        val name: String,
+        val notes: Int,
+        /** On the General MIDI drum channel: midi2ly writes drums as pitched notes. */
+        val drums: Boolean,
+        /** The General MIDI instrument family ("piano", "strings"…), if the track sets one. */
+        val instrument: String?,
+    )
+
+    /** The tracks of a MIDI file that have notes (tracks without, like the tempo track, are always kept). */
+    suspend fun midiTracks(midi: java.io.File): List<MidiTrack> = withContext(dispatcher) {
+        lilyedit() // starts Python if needed
+        val module = Python.getInstance().getModule("lilyimport")
+        val reply = JSONObject(module.callAttr("call", JSONObject().put("op", "midi_tracks").put("path", midi.absolutePath).toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val list = reply.getJSONArray("tracks")
+        List(list.length()) { i ->
+            val t = list.getJSONObject(i)
+            MidiTrack(
+                t.getInt("index"), t.getString("name"), t.getInt("notes"), t.getBoolean("drums"),
+                if (t.isNull("instrument")) null else t.getString("instrument"),
+            )
+        }
+    }
 
     /** The result of an import: LilyPond text in the current syntax, and the tools' messages. */
     data class Imported(val text: String, val log: String)
@@ -292,6 +321,7 @@ class LilyTools(context: Context) {
             options.startQuant?.let { req.put("start_quant", it) }
             options.key?.let { (sharps, minor) -> req.put("key", "$sharps:${if (minor) 1 else 0}") }
             if (options.tuplets.isNotEmpty()) req.put("tuplets", org.json.JSONArray(options.tuplets))
+            options.tracks?.let { req.put("tracks", org.json.JSONArray(it)) }
             val first = importCall(req)
             val converted = importCall(JSONObject().put("op", "convert_ly").put("text", first.text))
             Imported(converted.text, first.log + "\n" + converted.log)
