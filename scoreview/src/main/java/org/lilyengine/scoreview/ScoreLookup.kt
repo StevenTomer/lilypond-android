@@ -122,12 +122,17 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
         val hr = pageRect(h)
         val cx = (hr[0] + hr[2]) / 2
         val cy = (hr[1] + hr[3]) / 2
-        val pos = h.staffPosition ?: return null
+        val pos = h.staffPosition
         return grobsOnPage(h.page).filter { it.type == "StaffSymbol" }.map { it to pageRect(it) }
             .filter { (_, sr) -> cx >= sr[0] && cx <= sr[2] }
             .minByOrNull { (st, sr) ->
-                val half = (st.staffSpace ?: 1.0) * pointsPerStaffSpace / 2
-                abs(sr[1] + ((st.linePositions?.maxOrNull() ?: 4.0) - pos) * half - cy)
+                if (pos == null) {
+                    // (no staff position, as for whole rests: the staff it is drawn on or nearest)
+                    if (cy < sr[1]) sr[1] - cy else if (cy > sr[3]) cy - sr[3] else 0f
+                } else {
+                    val half = (st.staffSpace ?: 1.0) * pointsPerStaffSpace / 2
+                    abs(sr[1] + ((st.linePositions?.maxOrNull() ?: 4.0) - pos) * half - cy).toFloat()
+                }
             }?.first
     }
 
@@ -237,6 +242,23 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
             .mapNotNull { (_, gs) -> if (g in gs) g else gs.minByOrNull { it.origin!!.char + it.origin!!.line * 10_000 } }
             // A << \\ >> passage names its voices "1", "2"…: that order; others by context.
             .sortedWith(compareBy({ it.voiceId?.toIntOrNull() ?: Int.MAX_VALUE }, { it.voice ?: Int.MAX_VALUE }))
+    }
+
+    /**
+     * The note or rest on the nearest staff below [g]'s that ends exactly when
+     * [g] does: where a piano's left hand goes on from, when recording with
+     * two hands after [g]. Null if there is none (no staff below, or its music
+     * doesn't line up there).
+     */
+    fun alignedBelow(g: Grob): Grob? {
+        fun end(x: Grob): Double? = x.momentValue?.let { m -> x.duration?.let(::durationLength)?.let { m + it } }
+        val stop = end(g) ?: return null
+        val top = staffOf(g)?.let { pageRect(it)[1] } ?: return null
+        return soundingAt(stop - 1e-6)
+            .filter { (it.type == "NoteHead" || it.type == "Rest") && it.origin != null && it.staff != g.staff }
+            .filter { x -> end(x)?.let { abs(it - stop) < 1e-6 } == true }
+            .mapNotNull { x -> staffOf(x)?.let { st -> pageRect(st)[1].takeIf { it > top }?.let { x to it } } }
+            .minByOrNull { it.second }?.first
     }
 
     companion object {

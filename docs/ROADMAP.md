@@ -368,6 +368,22 @@ This plan covers the pieces needed before the editor and the editor phases after
     `c'4 d'4 e'4 <g' b'>2`. Also a voicesAt unit test and an include-parsing unit
     test.
 
+- **0.23.0, new scores and two-hand recording:**
+  - File ▸ New… opens a dialog of templates (`lilyedit.new_score`): melody, piano,
+    voice and piano, SATB on four staves or on two (named voices), lead sheet
+    (ChordNames over the melody), string quartet. It takes the title, composer,
+    key, time, tempo and number of bars. The parts are variables with a shared
+    `global`, each filled with bars of rests, ready for Fill rests. All seven were
+    checked with the host LilyPond.
+  - Recording with two hands: when the selected note has a staff below whose music
+    lines up there (`ScoreLookup.alignedBelow`), "Two hands" sends notes below middle
+    C into that staff, from the same moment. The later place is written first, so
+    the earlier offset stays valid.
+  - `ScoreLookup.staffOf` now places grobs without a staff position (whole rests)
+    on the nearest staff.
+  - Tests: 2 Python tests, and an instrumented two-hand recording into the piano
+    template, checked staff by staff in LilyPond's engraving.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

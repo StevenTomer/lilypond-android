@@ -270,6 +270,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var recorder by remember { mutableStateOf<Recorder?>(null) }
     var recordBpm by remember { mutableIntStateOf(80) }
     var recordGrid by remember { mutableStateOf("16") }
+    /** Record with two hands: notes below middle C go into the staff below. */
+    var twoHands by remember { mutableStateOf(true) }
     /** Notes, chords and rests waiting to be entered, in playing order. */
     val entries = remember { Channel<Entry>(Channel.UNLIMITED) }
     val connectedKeyboard by keyboard.connected.collectAsState()
@@ -605,17 +607,28 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         }
         // The new music starts when the selected note ends: for its bar lines.
         val start = (g.momentValue ?: 0.0) + (g.duration?.let { ScoreLookup.durationLength(it) } ?: 0.0)
+        // With two hands, notes below middle C go on in the staff below, from the same moment.
+        val below = if (twoHands) lookup?.alignedBelow(g)?.origin?.let { SourcePositions.offsetOf(text.text, it.line, it.char) } else null
+        val parts = if (below == null) listOf(at to played)
+        else listOf(at to played.filter { it.key >= SPLIT_KEY }, below to played.filter { it.key < SPLIT_KEY })
+            .filter { it.second.isNotEmpty() }
         busy = true
         scope.launch {
             try {
                 val before = text.text
-                val r = tools.record(before, at, played, start, recordGrid)
+                var after = before
+                var span: Pair<Int, Int>? = null
+                // The later place first: writing there leaves the earlier offset as it was.
+                for ((offset, notes) in parts.sortedByDescending { it.first }) {
+                    val r = tools.record(after, offset, notes, start, recordGrid)
+                    after = r.edit.applyTo(after)
+                    if (offset == at) span = r.start to r.end
+                }
                 undo.addLast(before)
-                val after = r.edit.applyTo(before)
                 selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
                 selectedOffset = null
-                text = TextFieldValue(after, TextRange(r.start, r.end))
-                status = "Recorded ${played.size} notes."
+                text = TextFieldValue(after, span?.let { TextRange(it.first, it.second) } ?: TextRange(at))
+                status = "Recorded ${played.size} notes" + if (parts.size > 1) ", in both hands." else "."
             } catch (ex: LilyTools.EditException) {
                 status = "Can't write the recording: ${ex.message}"
             } finally {
@@ -994,6 +1007,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     onBpm = { recordBpm = (recordBpm + it).coerceIn(30, 240) },
                     grid = recordGrid,
                     onGrid = { recordGrid = if (recordGrid == "16") "8" else "16" },
+                    canTwoHands = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
+                        ?.let { lookup?.alignedBelow(it) } != null,
+                    twoHands = twoHands,
+                    onTwoHands = { twoHands = !twoHands },
                     onRecord = {
                         if (recorder != null) stopRecording()
                         else if (selectedOffset == null) status = "Select the note to record after."
@@ -1437,6 +1454,10 @@ private fun EntryBar(
     onBpm: (Int) -> Unit,
     grid: String,
     onGrid: () -> Unit,
+    /** The selected note has a staff below to record a left hand into. */
+    canTwoHands: Boolean,
+    twoHands: Boolean,
+    onTwoHands: () -> Unit,
     onRecord: () -> Unit,
     onUndo: () -> Unit,
 ) {
@@ -1476,6 +1497,10 @@ private fun EntryBar(
                 Text("♩=$bpm", fontSize = 14.sp, modifier = Modifier.padding(horizontal = 4.dp))
                 OutlinedButton(onClick = { onBpm(5) }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("+") }
                 OutlinedButton(onClick = onGrid, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("grid 1/$grid") }
+                if (canTwoHands) {
+                    if (twoHands) Button(onClick = onTwoHands, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Two hands") }
+                    else OutlinedButton(onClick = onTwoHands, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Two hands") }
+                }
                 Button(
                     onClick = onRecord, contentPadding = PaddingValues(horizontal = 12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
@@ -1666,6 +1691,9 @@ private fun wordStart(text: String, n: Int): Int {
     }
     return text.length
 }
+
+/** Recording with two hands: from this key up (middle C) to the upper staff, below it to the lower. */
+private const val SPLIT_KEY = 60
 
 /** How long after typing stops the lyrics are written into the source. */
 private const val LYRICS_APPLY_DELAY_MS = 600L

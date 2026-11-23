@@ -256,6 +256,35 @@ class LilyToolsTest {
     }
 
     @Test
+    fun recordWithTwoHandsIntoAPianoScore() = runBlocking {
+        val src = tools.newScore(LilyTools.NewScore("piano", bars = 2))
+        val r = engine.render(src)
+        assertTrue(r.log, r.success)
+        val lookup = org.lilyengine.scoreview.ScoreLookup(r.scoreMap!!)
+        // The right hand's first rest, and the left hand's that ends with it.
+        val rests = lookup.grobsOnPage(1).filter { it.type == "Rest" }.sortedBy { it.momentValue }
+        val right = rests.minWith(compareBy({ it.momentValue }, { lookup.pageRect(it)[1] }))
+        val left = lookup.alignedBelow(right)
+        assertTrue("no rest below", left != null && left.staff != right.staff)
+        fun offset(g: org.lilyengine.engine.ScoreMap.Grob) = org.lilyengine.scoreview.SourcePositions.offsetOf(src, g.origin!!.line, g.origin!!.char)
+        // c'' and c (an octave below middle C) together, then d'' and d.
+        val played = listOf(
+            LilyTools.Played(0.0, 1.0, 72), LilyTools.Played(0.0, 1.0, 48),
+            LilyTools.Played(1.0, 2.0, 74), LilyTools.Played(1.0, 2.0, 50),
+        )
+        var text = src
+        for ((at, notes) in listOf(offset(right) to played.filter { it.key >= 60 }, offset(left!!) to played.filter { it.key < 60 })
+            .sortedByDescending { it.first }) {
+            text = tools.record(text, at, notes, 1.0).edit.applyTo(text)
+        }
+        val back = engine.render(text)
+        assertTrue(back.log, back.success)
+        val heads = back.scoreMap!!.grobs.filter { it.type == "NoteHead" }
+        val byStaff = heads.groupBy { it.staff }.values.map { hs -> hs.sortedBy { it.momentValue }.map { it.pitch!!.name } }.sortedBy { it.first() }
+        assertEquals(listOf(listOf("c", "d"), listOf("c''", "d''")), byStaff)
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)
