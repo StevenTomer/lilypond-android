@@ -235,6 +235,27 @@ class LilyToolsTest {
     }
 
     @Test
+    fun lyricsForAMelodyAndForVoiceTwo() = runBlocking {
+        // Verse for voice 2 of the << \\ >> passage, and one for the whole melody.
+        var src = POLY_SAMPLE
+        val r = tools.setVerse(src, src.indexOf("g' }"), 0, "Ah oh")
+        src = r.edit.applyTo(src)
+        assertEquals("g'", src.substring(r.offset, r.offset + 2))
+        // The melody's own voice sings the chord, fis and g after the passage (not the rest;
+        // the passage's notes belong to its two voices).
+        src = tools.setVerse(src, src.indexOf("r4"), 0, "one two three").edit.applyTo(src)
+        assertEquals(listOf("Ah oh"), tools.verses(src, src.indexOf("g' }")))
+
+        val render = engine.render(src)
+        assertTrue(render.log, render.success)
+        assertTrue(render.log, render.diagnostics.none { it.message.contains("needs a \\voice") })
+        val words = render.scoreMap!!.grobs.filter { it.type == "LyricText" }
+        assertEquals(2 + 3, words.size)
+        // The notes are as before: lyrics don't change the music.
+        assertEquals(heads(POLY_SAMPLE).values.flatten().sorted(), heads(src).values.flatten().sorted())
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

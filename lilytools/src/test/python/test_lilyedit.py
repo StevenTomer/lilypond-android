@@ -514,5 +514,49 @@ class TransposeParts(unittest.TestCase):
         self.assertIn("\\key d \\major", out)
 
 
+
+class Lyrics(unittest.TestCase):
+    PIANO = ("upper = \\relative c'' { b4 c d2 | e4 d c b }\n"
+             "lower = \\relative c { g2 d' | c b }\n"
+             "\\score { \\new PianoStaff << \\new Staff \\upper \\new Staff \\lower >> }")
+
+    def test_plain_text_round_trip(self):
+        plain = "Twin-kle twin-kle lit-tle star_ _ \"3rd\""
+        lily = e.plain_to_lyrics(plain)
+        self.assertEqual(lily, 'Twin -- kle twin -- kle lit -- tle star __ _ "\\"3rd\\""')
+        self.assertEqual(e.lyrics_to_plain(lily), plain)
+
+    def test_first_verse_goes_after_the_melody(self):
+        pos = self.PIANO.index("c d2")
+        out, p = e.set_verse(self.PIANO, pos, 0, "Twin-kle twin-kle star")
+        self.assertIn("e4 d c b } \\addlyrics { Twin -- kle twin -- kle star }\nlower", out)
+        self.assertEqual(p, pos)
+        self.assertEqual(e.verses(out, pos), ["Twin-kle twin-kle star"])
+
+    def test_verses_are_added_changed_and_removed(self):
+        pos = self.PIANO.index("c d2")
+        out, _ = e.set_verse(self.PIANO, pos, 0, "one")
+        out, _ = e.set_verse(out, pos, 1, "two")
+        out, _ = e.set_verse(out, pos, 0, "first")
+        self.assertEqual(e.verses(out, pos), ["first", "two"])
+        out, _ = e.set_verse(out, pos, 0, "")
+        self.assertEqual(e.verses(out, pos), ["two"])
+        with self.assertRaises(ValueError):
+            e.set_verse(out, pos, 3, "x")
+
+    def test_a_voice_of_a_passage_keeps_its_setting(self):
+        src = "\\relative c'' { << { b4 c d2 } \\\\ { g,2 fis } >> | g1 }"
+        pos = src.index("fis")
+        out, p = e.set_verse(src, pos, 0, "Ah oh")
+        self.assertEqual(out, "\\relative c'' { << { b4 c d2 } \\\\ { \\voiceTwo g,2 fis } \\addlyrics { Ah oh } >> | g1 }")
+        self.assertEqual(out[p:p + 3], "fis")
+        self.assertEqual(absolute(out), absolute(src))
+
+    def test_inside_a_score_block(self):
+        src = "\\score { \\new Staff \\relative c'' { c4 d e f } \\layout { } }"
+        out, _ = e.set_verse(src, src.index("d e"), 0, "la la la la")
+        self.assertIn("{ c4 d e f } \\addlyrics { la la la la } \\layout", out)
+
+
 if __name__ == "__main__":
     unittest.main()

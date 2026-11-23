@@ -43,6 +43,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -177,6 +179,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
     var transposing by remember { mutableStateOf(false) }
+    /** Lyrics mode: verses typed as plain text for the melody of [lyricAnchor] (a note's offset). */
+    var lyricsMode by remember { mutableStateOf(false) }
+    var lyricAnchor by remember { mutableStateOf<Int?>(null) }
+    var verseList by remember { mutableStateOf(emptyList<String>()) }
+    var verseIndex by remember { mutableIntStateOf(0) }
+    var verseText by remember { mutableStateOf("") }
+    /** The verse text last written into the source, so loading a verse doesn't write it back. */
+    var verseApplied by remember { mutableStateOf<String?>(null) }
     /** Puts a new text in the editor as one undoable step, dropping selection and range. */
     fun replaceText(newText: String) {
         undo.addLast(text.text)
@@ -419,6 +429,43 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     LaunchedEffect(text.text) {
         delay(VOICE_CHECK_DELAY_MS)
         uneven = runCatching { tools.voiceLengths(text.text) }.getOrDefault(emptyList())
+    }
+
+    // Lyrics: the selected note's melody, its verses, and typing written in shortly after.
+    LaunchedEffect(lyricsMode, selectedOffset) {
+        if (lyricsMode && selectedOffset != null && selectedOffset != lyricAnchor) {
+            val at = selectedOffset!!
+            val list = runCatching { tools.verses(text.text, at) }.getOrElse { status = "No melody here for lyrics: ${it.message}"; return@LaunchedEffect }
+            lyricAnchor = at
+            verseList = list
+            verseIndex = 0
+            verseText = list.firstOrNull().orEmpty()
+            verseApplied = verseText
+        }
+    }
+    LaunchedEffect(verseText, verseIndex) {
+        val at = lyricAnchor ?: return@LaunchedEffect
+        if (!lyricsMode || verseText == verseApplied) return@LaunchedEffect
+        delay(LYRICS_APPLY_DELAY_MS)
+        snapshotFlow { busy }.first { !it }
+        busy = true
+        try {
+            val before = text.text
+            val r = tools.setVerse(before, at, verseIndex, verseText)
+            if (!r.edit.isEmpty) {
+                undo.addLast(before)
+                val after = r.edit.applyTo(before)
+                lyricAnchor = r.offset
+                selectedOffset = r.offset
+                text = TextFieldValue(after, TextRange(r.offset))
+                verseList = tools.verses(after, r.offset)
+            }
+            verseApplied = verseText
+        } catch (ex: LilyTools.EditException) {
+            status = "Can't write these lyrics: ${ex.message}"
+        } finally {
+            busy = false
+        }
     }
 
     /** Colours in the source editor. */
@@ -736,8 +783,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         }
                     }
                     error?.let { e -> TextButton(onClick = { jumpTo(e) }) { Text("Go to error") } }
+                    if (lyricsMode) Button(onClick = { lyricsMode = false; lyricAnchor = null }) { Text("✓ Lyrics") }
+                    else TextButton(onClick = { lyricsMode = true; entering = false; lyricAnchor = null }) { Text("Lyrics") }
                     if (entering) Button(onClick = { entering = false }) { Text("✓ Enter notes") }
-                    else TextButton(onClick = { entering = true }) { Text("Enter notes") }
+                    else TextButton(onClick = { entering = true; lyricsMode = false }) { Text("Enter notes") }
                     TextButton(onClick = {
                         pickImport.launch(IMPORT_TYPES)
                     }) { Text("Import") }
@@ -793,7 +842,18 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     }
                 }
                 SelectionInfo(selection, lookup, range.size)
-                if (entering) EntryBar(
+                if (lyricsMode) LyricsBar(
+                    hasMelody = lyricAnchor != null,
+                    verses = verseList.size,
+                    index = verseIndex,
+                    text = verseText,
+                    onText = { verseText = it },
+                    onVerse = { i ->
+                        verseIndex = i
+                        verseText = verseList.getOrElse(i) { "" }
+                        verseApplied = verseText
+                    },
+                ) else if (entering) EntryBar(
                     duration = entryDuration,
                     dot = entryDot,
                     keyboardName = connectedKeyboard?.let(MidiKeyboard::name),
@@ -1232,6 +1292,53 @@ private fun Piano(low: Int, octaves: Int, onKey: (Int) -> Unit, modifier: Modifi
     }
 }
 
+/**
+ * Lyrics for the selected note's melody: a verse typed as plain text
+ * ("Twin-kle twin-kle lit-tle star_"), and buttons for the verses.
+ */
+@Composable
+private fun LyricsBar(
+    hasMelody: Boolean,
+    verses: Int,
+    index: Int,
+    text: String,
+    onText: (String) -> Unit,
+    onVerse: (Int) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 6.dp, vertical = 2.dp)) {
+        if (!hasMelody) {
+            Text("Tap a note of the melody that the words are for.", fontSize = 13.sp, modifier = Modifier.padding(6.dp))
+            return@Column
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Verse:", fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
+            val pad = PaddingValues(horizontal = 10.dp)
+            for (i in 0 until maxOf(verses, 1)) {
+                if (i == index) Button(onClick = { onVerse(i) }, contentPadding = pad) { Text("${i + 1}") }
+                else OutlinedButton(onClick = { onVerse(i) }, contentPadding = pad) { Text("${i + 1}") }
+            }
+            if (verses > 0 && index < verses) OutlinedButton(onClick = { onVerse(verses) }, contentPadding = pad) { Text("+ verse") }
+            Text(
+                "Words with spaces; a-part for syllables; word_ to hold it; _ to skip a note.",
+                fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(horizontal = 6.dp),
+            )
+        }
+        OutlinedTextField(
+            value = text,
+            onValueChange = onText,
+            placeholder = { Text("Twin-kle twin-kle lit-tle star_") },
+            textStyle = TextStyle(fontSize = 16.sp),
+            maxLines = 3,
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
 /** Articulations, dynamics, slurs, ties and hairpins for the selected note; those on it are filled. */
 @Composable
 private fun MarksBar(
@@ -1276,6 +1383,9 @@ private const val DRAFT_FILE = "score-draft.ly"
 
 /** How long after a change the draft is saved. */
 private const val DRAFT_SAVE_DELAY_MS = 1000L
+
+/** How long after typing stops the lyrics are written into the source. */
+private const val LYRICS_APPLY_DELAY_MS = 600L
 
 /** How long after a change the voices are checked for equal lengths. */
 private const val VOICE_CHECK_DELAY_MS = 700L

@@ -1122,6 +1122,200 @@ def pad_voices(text, pos):
 
 
 # --------------------------------------------------------------------------
+# Lyrics: verses typed as plain text, written as \\addlyrics after a melody
+
+# Blocks that hold settings, not music: lyrics never go after these.
+_BLOCKS = ("\\score", "\\layout", "\\header", "\\paper", "\\book", "\\bookpart", "\\with", "\\midi")
+
+
+def _brackets(text):
+    """Matching { } and << >> in the text (not in comments or strings):
+    two dicts, opening offset -> closing offset."""
+    braces, angles, stack = {}, {}, []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "%":
+            if text.startswith("%{", i):
+                j = text.find("%}", i + 2)
+                i = len(text) if j < 0 else j + 2
+            else:
+                j = text.find("\n", i)
+                i = len(text) if j < 0 else j
+            continue
+        if c == '"':
+            j = i + 1
+            while j < len(text) and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            i = j + 1
+            continue
+        if text.startswith("<<", i):
+            stack.append(("<<", i)); i += 2; continue
+        if text.startswith(">>", i):
+            while stack and stack[-1][0] != "<<":
+                stack.pop()
+            if stack:
+                angles[stack.pop()[1]] = i
+            i += 2
+            continue
+        if c == "{":
+            stack.append(("{", i))
+        elif c == "}":
+            while stack and stack[-1][0] != "{":
+                stack.pop()
+            if stack:
+                braces[stack.pop()[1]] = i
+        i += 1
+    return braces, angles
+
+
+def _word_before(text, pos):
+    """The command or word just before pos (skipping spaces): "\\score", "c''"…"""
+    j = pos
+    while j > 0 and text[j - 1].isspace():
+        j -= 1
+    k = j
+    while k > 0 and not text[k - 1].isspace() and text[k - 1] not in "{}<>":
+        k -= 1
+    return text[k:j], k
+
+
+def lyrics_target(text, pos):
+    """The melody the lyrics at `pos` belong to: (start, end, voice) where
+    start..end is its { } (end after the "}") and voice is its number in a
+    << { } \\\\ { } >> passage (0, 1…) or None. In a passage of voices, it is
+    that voice's { }; elsewhere, the outermost { } of music around `pos`, not
+    reaching into \\score or other blocks, nor out of a << >>."""
+    braces, angles = _brackets(text)
+    try:
+        start, end, parts = _enclosing_voices(text, pos)
+        for k, (a, b) in enumerate(parts):
+            if a <= pos < b:
+                inner = text[a:b]
+                lead = len(inner) - len(inner.lstrip())
+                if inner.strip().startswith("{"):
+                    o = a + lead
+                    return o, braces[o] + 1, k
+    except ValueError:
+        pass
+    around = sorted((o for o, c in braces.items() if o < pos < c), reverse=True)  # innermost first
+    if not around:
+        raise ValueError("not in music")
+    target = None
+    for o in around:
+        if _word_before(text, o)[0] in _BLOCKS:
+            break  # \\score { … }: not music itself
+        # a << between this { and the one inside it: the music is the inside one
+        if target is not None and any(o < a < target for a in angles):
+            break
+        target = o
+    if target is None:
+        raise ValueError("not in music")
+    return target, braces[target] + 1, None
+
+
+def _verse_blocks(text, end):
+    """The \\addlyrics { } blocks right after a melody ending at `end`, as
+    (start of "\\addlyrics", position of "{", position after "}")."""
+    braces, _ = _brackets(text)
+    out = []
+    at = end
+    while True:
+        m = re.compile(r"\s*\\addlyrics\s*(\{)").match(text, at)
+        if not m or m.start(1) not in braces:
+            return out
+        close = braces[m.start(1)] + 1
+        out.append((m.start(), m.start(1), close))
+        at = close
+
+
+def lyrics_to_plain(lily):
+    """LilyPond lyrics as plain text: "Twin -- kle star __" -> "Twin-kle star_"."""
+    toks = re.findall(r'"(?:\\.|[^"\\])*"|\S+', lily)
+    words = []
+    join = False
+    for t in toks:
+        if t == "--":
+            join = True
+            continue
+        if t == "__":
+            if words:
+                words[-1] += "_"
+            continue
+        if t.startswith('"') and t.endswith('"') and len(t) >= 2:
+            t = t[1:-1].replace('\\"', '"')
+        if join and words:
+            words[-1] += "-" + t
+        else:
+            words.append(t)
+        join = False
+    return " ".join(words)
+
+
+def _lily_syllable(s):
+    if s == "_":
+        return "_"  # a note without a syllable
+    if re.search(r'[{}"\\#$0-9]', s) or s in ("--", "__"):
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
+
+
+def plain_to_lyrics(plain):
+    """Plain text as LilyPond lyrics: "Twin-kle star_" -> "Twin -- kle star __"."""
+    out = []
+    for word in plain.split():
+        extend = word.endswith("_") and word != "_"
+        if extend:
+            word = word.rstrip("_")
+        parts = [p for p in re.split(r"(?<=\S)-(?=\S)", word)] if word != "_" else ["_"]
+        out.append(" -- ".join(_lily_syllable(p) for p in parts))
+        if extend:
+            out.append("__")
+    return " ".join(out)
+
+
+def verses(text, pos):
+    """The verses of the melody at `pos`, as plain text (see lyrics_to_plain)."""
+    _, end, _ = lyrics_target(text, pos)
+    return [lyrics_to_plain(text[o + 1:c - 1]) for _, o, c in _verse_blocks(text, end)]
+
+
+_VOICE_SETTINGS = ["\\voiceOne", "\\voiceTwo", "\\voiceThree", "\\voiceFour"]
+
+
+def set_verse(text, pos, index, plain):
+    """Sets verse `index` (0 = first) of the melody at `pos` to the plain
+    text, adding the verse (index = number of verses) or removing it (empty
+    text). A voice of a << { } \\\\ { } >> gets its \\voiceOne… setting written
+    in, since \\addlyrics would otherwise lose it. Returns (text, `pos` moved
+    along with the text before it)."""
+    start, end, voice = lyrics_target(text, pos)
+    blocks = _verse_blocks(text, end)
+    words = plain_to_lyrics(plain)
+    if index < len(blocks):
+        a, o, c = blocks[index]
+        if not words.strip():
+            text = text[:a] + text[c:]
+        else:
+            text = text[:o] + "{ " + words + " }" + text[c:]
+    elif index == len(blocks):
+        if not words.strip():
+            return text, pos
+        at = blocks[-1][2] if blocks else end
+        text = text[:at] + " \\addlyrics { " + words + " }" + text[at:]
+    else:
+        raise ValueError("no verse %d" % (index + 1))
+    if voice is not None and voice < len(_VOICE_SETTINGS):
+        setting = _VOICE_SETTINGS[voice]
+        inside = text[start + 1:start + 1 + 40]
+        if setting not in inside.split():
+            text = text[:start + 1] + " " + setting + text[start + 1:]
+            if pos > start:
+                pos += len(setting) + 1
+    return text, pos
+
+
+# --------------------------------------------------------------------------
 # Entry point for Kotlin: one JSON request in, one JSON reply out.
 
 
@@ -1183,6 +1377,11 @@ def call(request_json):
                 for a, b, lengths in voice_lengths(text)]})
         elif op == "pad_voices":
             out = pad_voices(text, req["pos"])
+        elif op == "verses":
+            return json.dumps({"verses": verses(text, req["pos"])})
+        elif op == "set_verse":
+            out, pos = set_verse(text, req["pos"], req["index"], req["plain"])
+            return json.dumps({"text": out, "pos": pos})
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":

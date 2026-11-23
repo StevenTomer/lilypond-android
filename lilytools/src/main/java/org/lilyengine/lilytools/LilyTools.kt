@@ -186,6 +186,36 @@ class LilyTools(context: Context) {
         JSONObject().put("op", "pad_voices").put("pos", text.codePointCount(0, offset)),
     )
 
+    /**
+     * The verses sung to the melody at [offset], as plain text: words
+     * separated by spaces, "-" between syllables of a word, "_" after a word
+     * held over more notes, "_" alone for a note without a syllable.
+     */
+    suspend fun verses(text: String, offset: Int): List<String> = withContext(dispatcher) {
+        val request = JSONObject().put("op", "verses").put("text", text).put("pos", text.codePointCount(0, offset))
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val list = reply.getJSONArray("verses")
+        List(list.length()) { list.getString(it) }
+    }
+
+    /** The result of [setVerse]: the edit, and where [offset]'s note is in the edited text. */
+    data class VerseEdit(val edit: TextEdit, val offset: Int)
+
+    /**
+     * Sets verse [index] (0 = first) of the melody at [offset] from plain
+     * text (see [verses]), written as `\addlyrics { … }` after the melody:
+     * [index] = the number of verses adds one, empty text removes it.
+     */
+    suspend fun setVerse(text: String, offset: Int, index: Int, plain: String): VerseEdit = withContext(dispatcher) {
+        val request = JSONObject().put("op", "set_verse").put("text", text)
+            .put("pos", text.codePointCount(0, offset)).put("index", index).put("plain", plain)
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val result = reply.getString("text")
+        VerseEdit(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("pos")))
+    }
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))
