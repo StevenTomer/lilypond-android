@@ -161,7 +161,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
      * (two or more), which the selection follows across re-renders and edits.
      */
     var range by remember { mutableStateOf<List<Int>>(emptyList()) }
-    val undo = remember { ArrayDeque<String>() }
+    val undo = remember { UndoHistory() }
     var busy by remember { mutableStateOf(false) }
     // Python starts in the background, so the first edit doesn't wait for it.
     LaunchedEffect(Unit) { runCatching { tools.start() } }
@@ -182,6 +182,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
     var transposing by remember { mutableStateOf(false) }
+    /** The score's settings while the Score settings dialog is open. */
+    var editingSettings by remember { mutableStateOf<LilyTools.ScoreSettings?>(null) }
     /** The New score dialog's templates, once asked for (null: the dialog is closed). */
     var newScoreTemplates by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
     /** Where the files the score \includes are copied to for LilyPond (from the folder the user granted). */
@@ -732,9 +734,15 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     }
 
     fun undoLast() {
-        val previous = undo.removeLastOrNull() ?: return
+        val previous = undo.undo(text.text) ?: return
         range = emptyList()
         text = TextFieldValue(previous, TextRange(selectedOffset?.coerceAtMost(previous.length) ?: 0))
+    }
+
+    fun redoLast() {
+        val next = undo.redo(text.text) ?: return
+        range = emptyList()
+        text = TextFieldValue(next, TextRange(selectedOffset?.coerceAtMost(next.length) ?: 0))
     }
 
     fun jumpTo(d: Diagnostic) {
@@ -790,6 +798,27 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             status = "New score: tap a rest and Enter notes to fill it."
                         }
                         .onFailure { status = "Can't make that score: ${it.message}" }
+                }
+            },
+        )
+    }
+
+    editingSettings?.let { current ->
+        SettingsDialog(
+            initial = current,
+            onDismiss = { editingSettings = null },
+            onApply = { new ->
+                editingSettings = null
+                scope.launch {
+                    runCatching { tools.setSettings(text.text, new) }
+                        .onSuccess { e ->
+                            if (!e.isEmpty) {
+                                undo.addLast(text.text)
+                                range = emptyList(); selectedOffset = null; selection = emptyList()
+                                text = TextFieldValue(e.applyTo(text.text))
+                            }
+                        }
+                        .onFailure { status = "Can't change the settings: ${it.message}" }
                 }
             },
         )
@@ -882,6 +911,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                                 if (uri != null) saveTo(uri, file.name) else saveAs.launch(file.name ?: "score.ly")
                             }
                             Item("Save as…") { saveAs.launch(file.name ?: "score.ly") }
+                            Item("Score settings…") {
+                                scope.launch { editingSettings = runCatching { tools.settings(text.text) }.getOrElse { LilyTools.ScoreSettings() } }
+                            }
                             HorizontalDivider()
                             Item("Share PDF", enabled = exportPdf != null) {
                                 exportPdf?.let { ScoreFiles.share(context, it, "application/pdf", ScoreFiles.baseName(file.name) + ".pdf") }
@@ -1017,6 +1049,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         else recorder = Recorder(keyboard, recordBpm).also { it.start(scope) }
                     },
                     onUndo = ::undoLast,
+                    canRedo = undo.canRedo,
+                    onRedo = ::redoLast,
                 ) else {
                     val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
                         ?.takeIf { text.text == renderedText }
@@ -1064,6 +1098,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             edit { src, off -> tools.removeVoice(src, off) }
                         },
                         onUndo = ::undoLast,
+                        canRedo = undo.canRedo,
+                        onRedo = ::redoLast,
                     )
                     MarksBar(
                         enabled = selected != null,
@@ -1136,6 +1172,34 @@ private sealed interface Entry {
     data class Step(val step: Int, val octave: Int) : Entry
 }
 
+/**
+ * Undo and redo of edits, as whole texts: an edit (addLast) makes the
+ * previous text undoable and forgets what could be redone.
+ */
+private class UndoHistory {
+    private val back = ArrayDeque<String>()
+    private val forward = ArrayDeque<String>()
+    /** Read in composition, so the buttons follow. */
+    var canRedo by mutableStateOf(false)
+        private set
+
+    fun addLast(before: String) {
+        back.addLast(before)
+        forward.clear()
+        canRedo = false
+    }
+
+    fun isNotEmpty() = back.isNotEmpty()
+
+    /** The text before the last edit, if any; [current] can then be redone. */
+    fun undo(current: String): String? = back.removeLastOrNull()?.also { forward.addLast(current); canRedo = true }
+
+    fun redo(current: String): String? = forward.removeLastOrNull()?.also {
+        back.addLast(current)
+        canRedo = forward.isNotEmpty()
+    }
+}
+
 /** Where playback sounds. */
 private enum class Sound(val label: String) {
     TABLET("tablet"),
@@ -1186,6 +1250,50 @@ private class Playback private constructor(
             }
         }
     }
+}
+
+/** The score's titles, paper and staff size. */
+@Composable
+private fun SettingsDialog(initial: LilyTools.ScoreSettings, onDismiss: () -> Unit, onApply: (LilyTools.ScoreSettings) -> Unit) {
+    var s by remember { mutableStateOf(initial) }
+    @Composable
+    fun Field(label: String, value: String?, onChange: (String) -> Unit) =
+        OutlinedTextField(value = value.orEmpty(), onValueChange = onChange, label = { Text(label) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    @Composable
+    fun Chips(options: List<Pair<String?, String>>, selected: String?, onSelect: (String?) -> Unit) =
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for ((value, label) in options) {
+                val pad = PaddingValues(horizontal = 8.dp)
+                if (value == selected) Button(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
+                else OutlinedButton(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
+            }
+        }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Score settings") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Field("Title", s.title) { s = s.copy(title = it) }
+                Field("Subtitle", s.subtitle) { s = s.copy(subtitle = it) }
+                Field("Composer", s.composer) { s = s.copy(composer = it) }
+                Field("Arranger", s.arranger) { s = s.copy(arranger = it) }
+                Field("Lyricist", s.poet) { s = s.copy(poet = it) }
+                Field("Copyright", s.copyright) { s = s.copy(copyright = it) }
+                Text("Paper")
+                Chips(listOf(null to "default (A4)", "a4" to "A4", "letter" to "Letter", "a5" to "A5", "a3" to "A3", "legal" to "Legal"), s.paper) { s = s.copy(paper = it) }
+                Chips(listOf("portrait" to "portrait", "landscape" to "landscape"), if (s.landscape) "landscape" else "portrait") {
+                    s = s.copy(landscape = it == "landscape", paper = s.paper ?: "a4")
+                }
+                Text("Staff size")
+                Chips(
+                    listOf(null to "default (20)") + listOf(14, 16, 18, 20, 23, 26).map { "$it" to "$it" },
+                    s.staffSize?.let { if (it % 1.0 == 0.0) "${it.toInt()}" else "$it" },
+                ) { s = s.copy(staffSize = it?.toDouble()) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onApply(s) }) { Text("Apply") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** A new score: template, title and composer, key, time, tempo, number of bars. */
@@ -1460,6 +1568,8 @@ private fun EntryBar(
     onTwoHands: () -> Unit,
     onRecord: () -> Unit,
     onUndo: () -> Unit,
+    canRedo: Boolean,
+    onRedo: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 4.dp, vertical = 2.dp)) {
         Row(
@@ -1513,6 +1623,7 @@ private fun EntryBar(
                 )
             }
             OutlinedButton(onClick = onUndo, enabled = canUndo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Undo") }
+            OutlinedButton(onClick = onRedo, enabled = canRedo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Redo") }
             Text(
                 (if (hasPlace && chordMode) "Into the selected chord. " else if (hasPlace) "After the selected note. " else "At the cursor. ") +
                     (keyboardName?.let { "Play on $it, tap the piano, or tap a line or space on the staff." }
@@ -1738,6 +1849,8 @@ private fun EditBar(
     inVoice: Boolean,
     onRemoveVoice: () -> Unit,
     onUndo: () -> Unit,
+    canRedo: Boolean,
+    onRedo: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
@@ -1759,6 +1872,7 @@ private fun EditBar(
         B("Add voice", enabled, onAddVoice)
         B("Remove voice", enabled && inVoice, onRemoveVoice)
         B("Undo", canUndo, onUndo)
+        B("Redo", canRedo, onRedo)
     }
 }
 

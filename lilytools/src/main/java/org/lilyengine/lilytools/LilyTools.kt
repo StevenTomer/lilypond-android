@@ -299,6 +299,43 @@ class LilyTools(context: Context) {
         reply.getString("text")
     }
 
+    /** A score's settings: header fields (null: not set), paper size ("a4", "letter"…), landscape, staff size in points. */
+    data class ScoreSettings(
+        val title: String? = null,
+        val subtitle: String? = null,
+        val composer: String? = null,
+        val arranger: String? = null,
+        val poet: String? = null,
+        val copyright: String? = null,
+        val paper: String? = null,
+        val landscape: Boolean = false,
+        val staffSize: Double? = null,
+    )
+
+    suspend fun settings(text: String): ScoreSettings = withContext(dispatcher) {
+        val reply = JSONObject(lilyedit().callAttr("call", JSONObject().put("op", "settings").put("text", text).toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val o = reply.getJSONObject("settings")
+        fun str(k: String) = if (o.isNull(k)) null else o.getString(k)
+        ScoreSettings(
+            str("title"), str("subtitle"), str("composer"), str("arranger"), str("poet"), str("copyright"),
+            str("paper"), o.optBoolean("landscape"), if (o.isNull("staff_size")) null else o.getDouble("staff_size"),
+        )
+    }
+
+    /** Writes [settings] into the score: header fields in its top \header, paper and staff size as top-level settings. */
+    suspend fun setSettings(text: String, settings: ScoreSettings): TextEdit = call(
+        text,
+        JSONObject().put("op", "set_settings").put(
+            "values",
+            JSONObject().put("title", settings.title.orEmpty()).put("subtitle", settings.subtitle.orEmpty())
+                .put("composer", settings.composer.orEmpty()).put("arranger", settings.arranger.orEmpty())
+                .put("poet", settings.poet.orEmpty()).put("copyright", settings.copyright.orEmpty())
+                .put("paper", settings.paper ?: JSONObject.NULL).put("landscape", settings.landscape)
+                .put("staff_size", settings.staffSize ?: JSONObject.NULL),
+        ),
+    )
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))

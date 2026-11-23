@@ -1656,6 +1656,122 @@ def new_score(template="melody", title="", composer="", tonic="c", mode="major",
 
 
 # --------------------------------------------------------------------------
+# Score settings: header fields, paper size, staff size
+
+HEADER_FIELDS = ["title", "subtitle", "composer", "arranger", "poet", "copyright"]
+_PAPER = re.compile(r'#\(set-default-paper-size\s+"([a-z0-9]+?)(landscape)?"\s*\)')
+_STAFF_SIZE = re.compile(r"#\(set-global-staff-size\s+([0-9.]+)\s*\)")
+
+
+def _top_header(text):
+    """The \\header { } that is not inside a \\score or \\book: (start of
+    "\\header", "{", after "}"), or None."""
+    braces, _ = _brackets(text)
+    for m in re.finditer(r"\\header\s*(\{)", text):
+        o = m.start(1)
+        if o in braces and not any(a < m.start() and braces[a] > o for a in braces if a != o):
+            return m.start(), o, braces[o] + 1
+    return None
+
+
+def _header_value(text, start, end, field):
+    m = re.compile(r'(?<![A-Za-z-])' + field + r'\s*=\s*("(?:\\.|[^"\\])*")').search(text, start, end)
+    if not m:
+        return None, None
+    v = m.group(1)[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return v, m
+
+
+def settings(text):
+    """The score's settings: header fields (plain strings), paper size,
+    landscape, staff size (None if not set)."""
+    out = {}
+    h = _top_header(text)
+    for f in HEADER_FIELDS:
+        out[f] = _header_value(text, h[1], h[2], f)[0] if h else None
+    m = _PAPER.search(text)
+    out["paper"] = m.group(1) if m else None
+    out["landscape"] = bool(m and m.group(2))
+    m = _STAFF_SIZE.search(text)
+    out["staff_size"] = float(m.group(1)) if m else None
+    return out
+
+
+def set_settings(text, values):
+    """Sets settings given in `values` (keys as in settings(); an empty
+    string or None removes a header field or setting)."""
+    # Header fields
+    for f in HEADER_FIELDS:
+        if f not in values:
+            continue
+        v = values[f] or ""
+        h = _top_header(text)
+        if h is None:
+            if not v:
+                continue
+            at = _after_version(text)
+            text = text[:at] + "\\header {\n}\n" + text[at:]
+            h = _top_header(text)
+        _, m = _header_value(text, h[1], h[2], f)
+        line = f + " = " + _string(v)
+        if m:
+            if v:
+                text = text[:m.start()] + line + text[m.end():]
+            else:  # the whole line goes
+                a = text.rfind("\n", 0, m.start()) + 1
+                b = text.find("\n", m.end())
+                b = len(text) if b < 0 else b + 1
+                if not text[a:m.start()].strip():
+                    text = text[:a] + text[b:]
+                else:  # on a line with other things: just the field, and its space
+                    e = m.end()
+                    while e < len(text) and text[e] == " ":
+                        e += 1
+                    text = text[:m.start()] + text[e:]
+        elif v:
+            close = h[2] - 1
+            if "\n" in text[h[1]:close]:  # a header over several lines: a line of its own
+                text = text[:close] + "  " + line + "\n" + text[close:]
+            else:  # \\header { title = "…" }: on the same line
+                head = text[:close].rstrip()
+                text = head + " " + line + " " + text[close:]
+    # Paper size and orientation
+    if "paper" in values or "landscape" in values:
+        cur = settings(text)
+        paper = values.get("paper", cur["paper"])
+        landscape = values.get("landscape", cur["landscape"])
+        line = '#(set-default-paper-size "%s%s")' % (paper, "landscape" if landscape else "") if paper else ""
+        text = _set_top_line(text, _PAPER, line)
+    # Staff size
+    if "staff_size" in values:
+        v = values["staff_size"]
+        line = "#(set-global-staff-size %g)" % float(v) if v else ""
+        text = _set_top_line(text, _STAFF_SIZE, line)
+    return text
+
+
+def _set_top_line(text, pattern, line):
+    """Replaces the setting `pattern` finds with `line`, adds it after the
+    \\version line, or removes it (with its line break) if `line` is empty."""
+    m = pattern.search(text)
+    if m and line:
+        return text[:m.start()] + line + text[m.end():]
+    if m:
+        end = m.end() + 1 if text[m.end():m.end() + 1] == "\n" else m.end()
+        return text[:m.start()] + text[end:]
+    if line:
+        at = _after_version(text)
+        return text[:at] + line + "\n" + text[at:]
+    return text
+
+
+def _after_version(text):
+    """Where top-level settings go: after the \\version line, or at the start."""
+    m = re.search(r'\\version\s*"[^"]*"[^\n]*\n?', text)
+    return m.end() if m else 0
+
+
+# --------------------------------------------------------------------------
 # Entry point for Kotlin: one JSON request in, one JSON reply out.
 
 
@@ -1738,6 +1854,10 @@ def call(request_json):
         elif op == "verse_at":
             found = verse_at(text, req["pos"])
             return json.dumps({"found": None if found is None else {"melody": found[0], "verse": found[1], "word": found[2]}})
+        elif op == "settings":
+            return json.dumps({"settings": settings(text)})
+        elif op == "set_settings":
+            out = set_settings(text, req["values"])
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":

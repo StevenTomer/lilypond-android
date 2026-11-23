@@ -649,5 +649,32 @@ class NewScores(unittest.TestCase):
         self.assertIn("\\tempo 4 = 120", text)
 
 
+
+class Settings(unittest.TestCase):
+    SRC = ('\\version "2.26.0"\n\\header { title = "Point and click" }\nupper = { c\'1 }\n'
+           '\\score { \\new Staff \\upper \\header { piece = "x" } }')
+
+    def test_read(self):
+        got = e.settings(self.SRC)
+        self.assertEqual(got["title"], "Point and click")
+        self.assertIsNone(got["composer"])
+        self.assertIsNone(got["paper"])
+
+    def test_set_and_remove(self):
+        out = e.set_settings(self.SRC, {"title": "Minuet", "composer": 'J. "S." Bach', "paper": "letter",
+                                        "landscape": True, "staff_size": 18})
+        self.assertIn('\\header { title = "Minuet" composer = "J. \\"S.\\" Bach" }', out)
+        self.assertIn('#(set-default-paper-size "letterlandscape")\n', out)
+        self.assertIn("#(set-global-staff-size 18)\n", out)
+        self.assertEqual(e.settings(out)["composer"], 'J. "S." Bach')
+        self.assertIn('piece = "x"', out)  # the score's own header is left alone
+        back = e.set_settings(out, {"composer": "", "paper": None, "staff_size": None})
+        self.assertEqual(back, self.SRC.replace("Point and click", "Minuet"))
+
+    def test_header_added_when_missing(self):
+        self.assertEqual(e.set_settings('\\version "2.26.0"\n{ c4 }', {"title": "New"}),
+                         '\\version "2.26.0"\n\\header {\n  title = "New"\n}\n{ c4 }')
+
+
 if __name__ == "__main__":
     unittest.main()

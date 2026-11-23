@@ -285,6 +285,21 @@ class LilyToolsTest {
     }
 
     @Test
+    fun scoreSettingsChangeThePage() = runBlocking {
+        val src = SCORE_SAMPLE
+        val settings = tools.settings(src).copy(composer = "J. S. Bach", paper = "letter", landscape = true, staffSize = 18.0)
+        val text = tools.setSettings(src, settings).applyTo(src)
+        assertEquals(settings, tools.settings(text))
+        val r = engine.render(text)
+        assertTrue(r.log, r.success)
+        org.lilyengine.scoreview.ScoreDocument.open(r.outputs.single()).use { doc ->
+            val (w, h) = doc.pageSizes[0]
+            assertEquals(792.0, w.toDouble(), 1.0) // US Letter, landscape
+            assertEquals(612.0, h.toDouble(), 1.0)
+        }
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)
