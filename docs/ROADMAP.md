@@ -322,11 +322,26 @@ This plan covers the pieces needed before the editor and the editor phases after
   - Also in this version: syntax colours in the source editor (`LilyHighlight`), and
     a Transpose dialog for the selection or the whole score. Part of a `\relative`
     passage is transposed with the music after it kept sounding the same.
-- **Next: lyric entry** (asked for). A Lyrics mode: select the first note of a
-  melody and type; Space moves on, `-` splits a word (` -- `), `_` holds a syllable
-  (` __ `). It writes `\addlyrics` after a melody without lyrics, or edits an existing
-  `\lyricsto` in place, and works per voice. Tapping a sung word edits it, and a
-  check counts syllables against notes.
+- **0.21.0, lyric entry:**
+  - Lyrics mode in the Score tab: tap a note of the melody and type the verse as
+    plain text (words with spaces, `a-part` for syllables, `word_` to hold it, `_`
+    alone for a note without a syllable). It is written into the source 0.6 s after
+    typing stops and re-engraved. Verses can be added (+ verse), edited and removed.
+  - Where it goes (`lilyedit.lyrics_target`, `set_verse`):
+    - After a melody without lyrics: `\addlyrics { Twin -- kle … __ }`.
+    - In a voice of a `\\` passage: on that voice's own `{ }`, with its
+      `\voiceOne`/`\voiceTwo` written in, since `\addlyrics` would otherwise drop it.
+    - Existing `\lyricsto` lyrics, inline or in a `\lyricmode` variable (as
+      musicxml2ly writes them), are read and edited in place. A named voice's
+      further verses go on another `\new Lyrics \lyricsto` line, since `\addlyrics`
+      would hide the voice's name.
+  - The bar shows how the verse fits: syllables against notes to sing. Ties, the
+    notes under a slur after its first, and rests take none (`verse_check`).
+  - Tapping a sung word on the score opens its verse with the cursor on the word
+    (`verse_at`).
+  - Tests: 13 Python tests, an instrumented test (verses for a melody and for voice
+    2, checked against LilyPond's engraving with no voice warnings), and the host
+    LilyPond compiling the `\lyricsto` and named-voice outputs cleanly.
 
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.

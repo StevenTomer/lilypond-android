@@ -184,7 +184,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var lyricAnchor by remember { mutableStateOf<Int?>(null) }
     var verseList by remember { mutableStateOf(emptyList<String>()) }
     var verseIndex by remember { mutableIntStateOf(0) }
-    var verseText by remember { mutableStateOf("") }
+    var verseField by remember { mutableStateOf(TextFieldValue("")) }
+    val verseText = verseField.text
+    /** How each verse fits its melody: syllables against notes to sing. */
+    var verseCounts by remember { mutableStateOf(emptyList<LilyTools.VerseCount>()) }
     /** The verse text last written into the source, so loading a verse doesn't write it back. */
     var verseApplied by remember { mutableStateOf<String?>(null) }
     /** Puts a new text in the editor as one undoable step, dropping selection and range. */
@@ -400,6 +403,21 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         val origin = g.origin ?: return
         if (text.text != renderedText) return
         val start = SourcePositions.offsetOf(text.text, origin.line, origin.char)
+        if (lyricsMode && g.type == "LyricText") {
+            // A sung word: open its verse, with the cursor on the word.
+            scope.launch {
+                val place = runCatching { tools.verseAt(text.text, start) }.getOrNull() ?: return@launch
+                val list = runCatching { tools.verses(text.text, place.melodyOffset) }.getOrNull() ?: return@launch
+                lyricAnchor = place.melodyOffset
+                selectedOffset = place.melodyOffset
+                verseList = list
+                verseIndex = place.verse
+                val verse = list.getOrElse(place.verse) { "" }
+                verseField = TextFieldValue(verse, TextRange(wordStart(verse, place.word)))
+                verseApplied = verse
+            }
+            return
+        }
         selectedOffset = start
         text = text.copy(selection = TextRange(start, SourcePositions.tokenEnd(text.text, start)))
         focus.requestFocus()
@@ -439,9 +457,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             lyricAnchor = at
             verseList = list
             verseIndex = 0
-            verseText = list.firstOrNull().orEmpty()
-            verseApplied = verseText
+            verseField = TextFieldValue(list.firstOrNull().orEmpty())
+            verseApplied = list.firstOrNull().orEmpty()
         }
+    }
+    LaunchedEffect(lyricAnchor, text.text) {
+        val at = lyricAnchor
+        verseCounts = if (!lyricsMode || at == null || at > text.text.length) emptyList()
+        else runCatching { tools.verseCheck(text.text, at) }.getOrDefault(emptyList())
     }
     LaunchedEffect(verseText, verseIndex) {
         val at = lyricAnchor ?: return@LaunchedEffect
@@ -846,12 +869,13 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     hasMelody = lyricAnchor != null,
                     verses = verseList.size,
                     index = verseIndex,
-                    text = verseText,
-                    onText = { verseText = it },
+                    field = verseField,
+                    count = verseCounts.getOrNull(verseIndex),
+                    onField = { verseField = it },
                     onVerse = { i ->
                         verseIndex = i
-                        verseText = verseList.getOrElse(i) { "" }
-                        verseApplied = verseText
+                        verseField = TextFieldValue(verseList.getOrElse(i) { "" })
+                        verseApplied = verseList.getOrElse(i) { "" }
                     },
                 ) else if (entering) EntryBar(
                     duration = entryDuration,
@@ -1301,8 +1325,10 @@ private fun LyricsBar(
     hasMelody: Boolean,
     verses: Int,
     index: Int,
-    text: String,
-    onText: (String) -> Unit,
+    field: TextFieldValue,
+    /** How this verse fits the melody, if known. */
+    count: LilyTools.VerseCount?,
+    onField: (TextFieldValue) -> Unit,
     onVerse: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 6.dp, vertical = 2.dp)) {
@@ -1322,14 +1348,24 @@ private fun LyricsBar(
                 else OutlinedButton(onClick = { onVerse(i) }, contentPadding = pad) { Text("${i + 1}") }
             }
             if (verses > 0 && index < verses) OutlinedButton(onClick = { onVerse(verses) }, contentPadding = pad) { Text("+ verse") }
+            count?.let { c ->
+                val fits = c.syllables == c.notes
+                Text(
+                    if (fits) "✓ ${c.syllables} syllables, one per note"
+                    else "${c.syllables} syllables for ${c.notes} notes" + if (c.syllables < c.notes) " (${c.notes - c.syllables} short)" else " (${c.syllables - c.notes} too many)",
+                    fontSize = 13.sp,
+                    color = if (fits) Color(0xFF2E7D32) else Color(0xFFC62828),
+                    modifier = Modifier.padding(horizontal = 6.dp),
+                )
+            }
             Text(
                 "Words with spaces; a-part for syllables; word_ to hold it; _ to skip a note.",
                 fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(horizontal = 6.dp),
             )
         }
         OutlinedTextField(
-            value = text,
-            onValueChange = onText,
+            value = field,
+            onValueChange = onField,
             placeholder = { Text("Twin-kle twin-kle lit-tle star_") },
             textStyle = TextStyle(fontSize = 16.sp),
             maxLines = 3,
@@ -1383,6 +1419,20 @@ private const val DRAFT_FILE = "score-draft.ly"
 
 /** How long after a change the draft is saved. */
 private const val DRAFT_SAVE_DELAY_MS = 1000L
+
+/** Where word [n] (0-based, separated by spaces) starts in [text]. */
+private fun wordStart(text: String, n: Int): Int {
+    var word = -1
+    var i = 0
+    while (i < text.length) {
+        if (!text[i].isWhitespace() && (i == 0 || text[i - 1].isWhitespace())) {
+            word++
+            if (word == n) return i
+        }
+        i++
+    }
+    return text.length
+}
 
 /** How long after typing stops the lyrics are written into the source. */
 private const val LYRICS_APPLY_DELAY_MS = 600L

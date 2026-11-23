@@ -1274,10 +1274,76 @@ def plain_to_lyrics(plain):
     return " ".join(out)
 
 
+_VOICE_DEF = r'\\(?:new|context)\s+Voice\s*=\s*"?([A-Za-z0-9_.-]+)"?\s*(?:\\with\s*\{[^{}]*\}\s*)?'
+_MUSIC_PREFIX = r'(?:\\(?:relative|fixed)\s+[a-z]+[\',]*\s*)?'
+
+
+def _voice_name(text, start):
+    """The name of the voice whose music is the { } at `start`: written right
+    after \\new Voice = "name" (\\context Voice too), or a variable used
+    inside one, as musicxml2ly writes. None if it has no name."""
+    before = text[:start]
+    m = re.search(_VOICE_DEF + _MUSIC_PREFIX + r'$', before)
+    if m:
+        return m.group(1)
+    m = re.search(r'([A-Za-z]+)\s*=\s*' + _MUSIC_PREFIX + r'$', before)
+    if m:
+        var = m.group(1)
+        use = re.search(_VOICE_DEF + r'\{[^{}]*?\\' + var + r'(?![A-Za-z])', text)
+        if use:
+            return use.group(1)
+    return None
+
+
+def _lyricsto_blocks(text, voice):
+    """The lyrics sung to the voice named `voice` with \\lyricsto, in order:
+    (start of \\lyricsto, position of "{", position after "}" of the lyrics,
+    end of the \\lyricsto expression), the lyrics written inline or in a
+    variable (name = \\lyricmode { … })."""
+    braces, _ = _brackets(text)
+    out = []
+    for m in re.finditer(r'\\lyricsto\s*"?' + re.escape(voice) + r'"?\s*(?:\\lyricmode\s*)?(?:(\{)|\\([A-Za-z]+))', text):
+        if m.group(1):
+            o = m.start(1)
+            use_end = None  # after the lyrics' }
+        else:
+            use_end = m.end()
+            d = re.search(r'(?<![A-Za-z\\])' + m.group(2) + r'\s*=\s*\\lyricmode\s*(\{)', text)
+            if not d:
+                continue
+            o = d.start(1)
+        if o in braces:
+            out.append((m.start(), o, braces[o] + 1, use_end or braces[o] + 1))
+    return out
+
+
+def _named_voice_end(text, name):
+    """Where a \\new Lyrics for the voice `name` can go: right after its
+    \\new Voice = "name" { … }, if that stands in a << >>. Else None."""
+    braces, angles = _brackets(text)
+    for m in re.finditer(_VOICE_DEF + r'(\{)', text):
+        if m.group(1) != name or m.start(2) not in braces:
+            continue
+        close = braces[m.start(2)] + 1
+        inside = [o for o, c in angles.items() if o < m.start() and close <= c]
+        tighter = [o for o, c in braces.items() if o < m.start() and close <= c]
+        if inside and (not tighter or max(inside) > max(tighter)):
+            return close
+    return None
+
+
+def _all_verses(text, start, end):
+    """The verses of the melody start..end: its \\lyricsto lyrics, then its
+    \\addlyrics ones, as (kind, start, "{" position, after "}")."""
+    name = _voice_name(text, start)
+    found = [("lyricsto",) + b for b in (_lyricsto_blocks(text, name) if name else [])]
+    return found + [("addlyrics",) + b + (b[2],) for b in _verse_blocks(text, end)]
+
+
 def verses(text, pos):
     """The verses of the melody at `pos`, as plain text (see lyrics_to_plain)."""
-    _, end, _ = lyrics_target(text, pos)
-    return [lyrics_to_plain(text[o + 1:c - 1]) for _, o, c in _verse_blocks(text, end)]
+    start, end, _ = lyrics_target(text, pos)
+    return [lyrics_to_plain(text[o + 1:c - 1]) for _, _, o, c, _ in _all_verses(text, start, end)]
 
 
 _VOICE_SETTINGS = ["\\voiceOne", "\\voiceTwo", "\\voiceThree", "\\voiceFour"]
@@ -1286,26 +1352,47 @@ _VOICE_SETTINGS = ["\\voiceOne", "\\voiceTwo", "\\voiceThree", "\\voiceFour"]
 def set_verse(text, pos, index, plain):
     """Sets verse `index` (0 = first) of the melody at `pos` to the plain
     text, adding the verse (index = number of verses) or removing it (empty
-    text). A voice of a << { } \\\\ { } >> gets its \\voiceOne… setting written
-    in, since \\addlyrics would otherwise lose it. Returns (text, `pos` moved
+    text; \\lyricsto lyrics are only emptied, keeping their Lyrics context).
+    A voice of a << { } \\\\ { } >> gets its \\voiceOne… setting written in,
+    since \\addlyrics would otherwise lose it. Returns (text, `pos` moved
     along with the text before it)."""
     start, end, voice = lyrics_target(text, pos)
-    blocks = _verse_blocks(text, end)
+    every = _all_verses(text, start, end)
     words = plain_to_lyrics(plain)
-    if index < len(blocks):
-        a, o, c = blocks[index]
-        if not words.strip():
-            text = text[:a] + text[c:]
+    if index < len(every):
+        kind, a, o, c, _ = every[index]
+        if kind == "addlyrics" and not words.strip():
+            cut_from, cut_to, new = a, c, ""
         else:
-            text = text[:o] + "{ " + words + " }" + text[c:]
-    elif index == len(blocks):
+            cut_from, cut_to, new = o, c, "{ " + words + " }" if words.strip() else "{ }"
+        text = text[:cut_from] + new + text[cut_to:]
+        if cut_from < pos:  # lyrics written before the melody (a variable)
+            pos += len(new) - (cut_to - cut_from)
+            start += len(new) - (cut_to - cut_from) if cut_from < start else 0
+        added_lyrics = kind == "addlyrics" and bool(words.strip())
+    elif index == len(every):
         if not words.strip():
             return text, pos
-        at = blocks[-1][2] if blocks else end
-        text = text[:at] + " \\addlyrics { " + words + " }" + text[at:]
+        name = _voice_name(text, start)
+        lyricsto = [b for b in every if b[0] == "lyricsto"]
+        named_at = _named_voice_end(text, name) if name and not lyricsto else None
+        if lyricsto or named_at is not None:
+            # A named voice: \\addlyrics would hide its name from \\lyricsto; a
+            # further Lyrics line is LilyPond's way.
+            at = lyricsto[-1][4] if lyricsto else named_at
+            line = ' \\new Lyrics \\lyricsto "%s" { %s }' % (name, words)
+            text = text[:at] + line + text[at:]
+            if at < pos:
+                pos += len(line)
+            added_lyrics = False
+        else:
+            addl = [b for b in every if b[0] == "addlyrics"]
+            at = addl[-1][3] if addl else end
+            text = text[:at] + " \\addlyrics { " + words + " }" + text[at:]
+            added_lyrics = True
     else:
         raise ValueError("no verse %d" % (index + 1))
-    if voice is not None and voice < len(_VOICE_SETTINGS):
+    if added_lyrics and voice is not None and voice < len(_VOICE_SETTINGS):
         setting = _VOICE_SETTINGS[voice]
         inside = text[start + 1:start + 1 + 40]
         if setting not in inside.split():
@@ -1313,6 +1400,66 @@ def set_verse(text, pos, index, plain):
             if pos > start:
                 pos += len(setting) + 1
     return text, pos
+
+
+def _syllables(lily):
+    """The syllables of LilyPond lyrics (words split at --), without __."""
+    toks = re.findall(r'"(?:\\.|[^"\\])*"|\S+', lily)
+    return [t for t in toks if t not in ("--", "__")]
+
+
+def _sung_notes(text, start, end):
+    """How many notes of the melody start..end take a syllable of \\addlyrics:
+    chords count once, tied-to notes and notes under a slur after its first
+    don't (they extend the syllable before), rests and skips don't."""
+    items = _items(text)
+    count, tied, in_slur = 0, False, False
+    for it, _, _ in items:
+        if not (start <= it.pos < end):
+            continue
+        if _is_rest(text, it):
+            continue
+        m = marks(text, _item_start(text, it))
+        if not tied and not in_slur:
+            count += 1
+        tied = "tie" in m
+        if "slur-start" in m:
+            in_slur = True
+        if "slur-end" in m:
+            in_slur = False
+    return count
+
+
+def verse_check(text, pos):
+    """For each verse of the melody at `pos`: (syllables, notes to sing)."""
+    start, end, _ = lyrics_target(text, pos)
+    notes_ = _sung_notes(text, start, end)
+    return [(len(_syllables(text[o + 1:c - 1])), notes_) for _, _, o, c, _ in _all_verses(text, start, end)]
+
+
+def verse_at(text, pos):
+    """The verse and word at `pos` in lyrics: (a position in the melody, verse
+    index, word index among the verse's plain words), or None."""
+    for target_start, target_end in _music_ends(text):
+        blocks = _all_verses(text, target_start, target_end)
+        for index, (_, _, o, c, _) in enumerate(blocks):
+            if o < pos < c:
+                # up to the end of the syllable at pos: its word is the last one then
+                e = pos
+                while e < c - 1 and not text[e].isspace():
+                    e += 1
+                words = lyrics_to_plain(text[o + 1:e]).split()
+                return target_start + 1, index, max(len(words) - 1, 0)
+    return None
+
+
+def _music_ends(text):
+    """Every { } of music with lyrics: followed by \\addlyrics, or the music
+    of a named voice (\\lyricsto): (start, end after "}")."""
+    braces, _ = _brackets(text)
+    for o, c in braces.items():
+        if re.compile(r"\s*\\addlyrics").match(text, c + 1) or _voice_name(text, o):
+            yield o, c + 1
 
 
 # --------------------------------------------------------------------------
@@ -1382,6 +1529,11 @@ def call(request_json):
         elif op == "set_verse":
             out, pos = set_verse(text, req["pos"], req["index"], req["plain"])
             return json.dumps({"text": out, "pos": pos})
+        elif op == "verse_check":
+            return json.dumps({"verses": [{"syllables": a, "notes": b} for a, b in verse_check(text, req["pos"])]})
+        elif op == "verse_at":
+            found = verse_at(text, req["pos"])
+            return json.dumps({"found": None if found is None else {"melody": found[0], "verse": found[1], "word": found[2]}})
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":

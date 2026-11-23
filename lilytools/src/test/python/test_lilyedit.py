@@ -558,5 +558,52 @@ class Lyrics(unittest.TestCase):
         self.assertIn("{ c4 d e f } \\addlyrics { la la la la } \\layout", out)
 
 
+
+class LyricChecks(unittest.TestCase):
+    SRC = "mel = \\relative c'' { c4( d) e~ e r f <g b> a } \\addlyrics { one two -- three four five } \\addlyrics { a b }"
+
+    def test_slurs_ties_chords_and_rests(self):
+        # c( d) one syllable, e~ e one, r none, f, <g b>, a: five notes to sing
+        self.assertEqual(e.verse_check(self.SRC, self.SRC.index("e~")), [(5, 5), (2, 5)])
+
+    def test_word_under_the_pen(self):
+        self.assertEqual(e.verse_at(self.SRC, self.SRC.index("three")), (self.SRC.index("{") + 1, 0, 1))
+        self.assertEqual(e.verse_at(self.SRC, self.SRC.index("five")), (self.SRC.index("{") + 1, 0, 3))
+        self.assertEqual(e.verse_at(self.SRC, self.SRC.index("a b") + 2), (self.SRC.index("{") + 1, 1, 1))
+        self.assertIsNone(e.verse_at(self.SRC, self.SRC.index("c4")))
+
+
+
+class LyricsTo(unittest.TestCase):
+    # As musicxml2ly writes them: the melody and its lyrics in variables.
+    SRC = ('melody = \\relative c\'\' { c4 d e f }\n'
+           'melodyLyrics = \\lyricmode { one two three four }\n'
+           '\\score { << \\new Staff << \\context Voice = "mel" { \\voiceOne \\melody } >>\n'
+           '  \\new Lyrics \\lyricsto "mel" \\melodyLyrics >> }')
+
+    def test_reads_and_edits_the_lyrics_variable(self):
+        pos = self.SRC.index("c4 d")
+        self.assertEqual(e.verses(self.SRC, pos), ["one two three four"])
+        out, p = e.set_verse(self.SRC, pos, 0, "Hel-lo dear world")
+        self.assertIn("melodyLyrics = \\lyricmode { Hel -- lo dear world }", out)
+        self.assertEqual(out[p:p + 4], "c4 d")
+
+    def test_another_verse_is_another_lyrics_line(self):
+        pos = self.SRC.index("c4 d")
+        out, _ = e.set_verse(self.SRC, pos, 1, "sec-ond verse")
+        self.assertIn('\\lyricsto "mel" \\melodyLyrics \\new Lyrics \\lyricsto "mel" { sec -- ond verse }', out)
+        self.assertNotIn("\\addlyrics", out)
+        self.assertEqual(e.verses(out, pos), ["one two three four", "sec-ond verse"])
+
+    def test_named_voice_without_lyrics(self):
+        src = self.SRC.replace('\n  \\new Lyrics \\lyricsto "mel" \\melodyLyrics', '')
+        out, _ = e.set_verse(src, src.index("c4 d"), 0, "brand new")
+        self.assertIn('\\melody } \\new Lyrics \\lyricsto "mel" { brand new } >>', out)
+
+    def test_emptying_keeps_the_lyrics_context(self):
+        out, _ = e.set_verse(self.SRC, self.SRC.index("c4 d"), 0, "")
+        self.assertIn("melodyLyrics = \\lyricmode { }", out)
+
+
 if __name__ == "__main__":
     unittest.main()
