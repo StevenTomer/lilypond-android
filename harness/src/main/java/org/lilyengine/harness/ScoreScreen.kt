@@ -182,6 +182,19 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
     var transposing by remember { mutableStateOf(false) }
+    /** Where the files the score \includes are copied to for LilyPond (from the folder the user granted). */
+    var includeDirs by remember { mutableStateOf(emptyList<java.io.File>()) }
+    /** A render failed for an included file it couldn't find: offer to grant the score's folder. */
+    var needsFolder by remember { mutableStateOf(false) }
+    /** Bumped to render again with the same text (after granting a folder). */
+    var rerender by remember { mutableIntStateOf(0) }
+    val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        val f = file.uri
+        if (tree == null || f == null) return@rememberLauncherForActivityResult
+        runCatching { IncludeFolder.setFolderFor(context, f, tree) }
+            .onSuccess { needsFolder = false; rerender++ }
+            .onFailure { status = "Can't use that folder: ${it.message}" }
+    }
     /** Lyrics mode: verses typed as plain text for the melody of [lyricAnchor] (a note's offset). */
     var lyricsMode by remember { mutableStateOf(false) }
     var lyricAnchor by remember { mutableStateOf<Int?>(null) }
@@ -289,7 +302,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         try {
             engine.render(
                 source,
-                LilyPondEngine.Options(midi = true, scoreMap = true, timeoutSeconds = WHOLE_SCORE_TIMEOUT_S, onOutput = progress::onOutput),
+                LilyPondEngine.Options(
+                    midi = true, scoreMap = true, timeoutSeconds = WHOLE_SCORE_TIMEOUT_S, onOutput = progress::onOutput,
+                    includeDirs = includeDirs,
+                ),
             )
         } finally {
             ticker.cancel()
@@ -317,6 +333,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 else -> " (exit code ${r.exitCode})"
             }
             failedLog = r.log
+            needsFolder = "cannot find file" in r.log && IncludeFolder.includes(source).isNotEmpty()
             return false
         }
         failedLog = null
@@ -342,10 +359,18 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     // edit cancels a render in progress. After an edit to a long score, the
     // bars around the edit are engraved first, then the whole score.
     LaunchedEffect(Unit) {
-        snapshotFlow { text.text }
+        snapshotFlow { text.text to rerender }
             .distinctUntilChanged()
-            .debounce { if (pendingEdit.value?.first == it) 0L else 600L }
-            .collectLatest { source ->
+            .debounce { if (pendingEdit.value?.first == it.first) 0L else 600L }
+            .collectLatest { (source, _) ->
+                // Included files from the score's folder, copied where LilyPond can read them.
+                val folder = IncludeFolder.folderFor(context, file.uri)
+                includeDirs = if (folder == null || IncludeFolder.includes(source).isEmpty()) emptyList()
+                else withContext(Dispatchers.IO) {
+                    val dest = java.io.File(context.cacheDir, "includes")
+                    runCatching { IncludeFolder.sync(context, folder, source, dest) }
+                    listOf(dest)
+                }
                 val edit = pendingEdit.value?.takeIf { it.first == source }
                 pendingEdit.value = null
                 val imported = pendingImport.value == source
@@ -354,14 +379,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 if (imported) {
                     // An imported file can be long: show its beginning first.
                     status = "Engraving the first bars…"
-                    val p = engine.render(source, LilyPondEngine.Options(midi = false, scoreMap = true, window = "0" to FIRST_LOOK_WHOLE_NOTES))
+                    val p = engine.render(source, LilyPondEngine.Options(midi = false, scoreMap = true, window = "0" to FIRST_LOOK_WHOLE_NOTES, includeDirs = includeDirs))
                     if (show(p, source)) {
                         status = "Preview: the first bars (${p.elapsedMillis} ms); whole score in progress…"
                     }
                 } else if (edit != null && l != null && lastFullMillis > PREVIEW_THRESHOLD_MS) {
                     status = "Engraving the bars around the edit…"
                     val window = l.windowAround(edit.second)
-                    val p = engine.render(source, LilyPondEngine.Options(midi = false, scoreMap = true, window = window))
+                    val p = engine.render(source, LilyPondEngine.Options(midi = false, scoreMap = true, window = window, includeDirs = includeDirs))
                     if (show(p, source)) {
                         status = "Preview: bars around the edit (${p.elapsedMillis} ms); whole score in progress…"
                     }
@@ -841,6 +866,14 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(status, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp).weight(1f))
+                    if (needsFolder) {
+                        if (file.uri == null) Text("Save the score in its folder first, to include files from there.", fontSize = 12.sp)
+                        else {
+                            TextButton(onClick = { pickFolder.launch(null) }) { Text("Choose its folder") }
+                            // Android refuses Downloads itself (and the top of storage) as a folder to grant.
+                            Text("(a folder of its own, e.g. Download/scores)", fontSize = 12.sp, color = Color.Gray)
+                        }
+                    }
                     failedLog?.let { log ->
                         TextButton(onClick = {
                             shareText(context, "LilyPond log", SelfTest.deviceInfo() + "\n" + log.takeLast(SHARED_LOG_CHARS))
