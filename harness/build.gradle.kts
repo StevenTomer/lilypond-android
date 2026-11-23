@@ -14,8 +14,8 @@ android {
         applicationId = "org.lilyengine.harness"
         minSdk = 28
         targetSdk = 37
-        versionCode = 21
-        versionName = "0.18.0"
+        versionCode = 22
+        versionName = "0.19.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // LilyPond is only built for these (64-bit only: Guile bytecode is
         // compiled for 64-bit little-endian).

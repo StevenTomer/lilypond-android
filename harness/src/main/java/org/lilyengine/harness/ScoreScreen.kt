@@ -39,6 +39,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -166,7 +169,43 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
 
     /** How long the last full render took: long scores get a fast preview after an edit. */
     var lastFullMillis by remember { mutableStateOf(0L) }
-    var longSample by remember { mutableStateOf(false) }
+    /** The file the score was opened from or saved to, if any, and whether it has unsaved changes. */
+    var file by remember { mutableStateOf(ScoreFiles.load(context)) }
+    val modified = file.savedHash != text.text.hashCode()
+    fun setFile(f: ScoreFiles.Current) { file = f; ScoreFiles.store(context, f) }
+    /** The last whole render's PDF, copied out for sharing (renders delete their own files). */
+    var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
+    var fileMenu by remember { mutableStateOf(false) }
+    /** Puts a new text in the editor as one undoable step, dropping selection and range. */
+    fun replaceText(newText: String) {
+        undo.addLast(text.text)
+        selectedOffset = null; selection = emptyList(); range = emptyList()
+        text = TextFieldValue(newText)
+    }
+    fun saveTo(uri: android.net.Uri, name: String?) {
+        runCatching { ScoreFiles.write(context, uri, text.text) }
+            .onSuccess {
+                setFile(ScoreFiles.Current(uri, name, text.text.hashCode()))
+                status = "Saved ${name ?: "the score"}"
+            }
+            .onFailure { status = "Can't save there: ${it.message}" }
+    }
+    val openLy = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            ScoreFiles.keepAccess(context, uri)
+            val t = ScoreFiles.read(context, uri)
+            val name = ScoreFiles.displayName(context, uri)
+            replaceText(t)
+            setFile(ScoreFiles.Current(uri, name, t.hashCode()))
+            status = "Opened ${name ?: "the file"}"
+        }.onFailure { status = "Can't open that file: ${it.message}" }
+    }
+    val saveAs = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-lilypond")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        ScoreFiles.keepAccess(context, uri)
+        saveTo(uri, ScoreFiles.displayName(context, uri))
+    }
     /** A MIDI file picked for import, waiting for the options dialog. */
     var midiToImport by remember { mutableStateOf<java.io.File?>(null) }
     /** A MusicXML file picked for import, waiting for the options dialog. */
@@ -318,6 +357,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     // Copied out: the engine deletes a render's files when the next one starts,
                     // which would leave Play with nothing to play.
                     midi = r.midi.firstOrNull()?.let { keepForPlayback(it) }
+                    exportPdf = r.outputs.firstOrNull()?.let {
+                        it.copyTo(ScoreFiles.exportFile(context, "score.pdf"), overwrite = true)
+                    }
                     status = "${document?.pageCount} page(s), ${r.elapsedMillis} ms" +
                         (error?.let { " — error on line ${it.line}: ${it.message}" } ?: "")
                 }
@@ -615,17 +657,52 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 ) {
+                    Box {
+                        TextButton(onClick = { fileMenu = true }) {
+                            Text((file.name ?: "Untitled") + (if (modified) " •" else "") + " ▾", maxLines = 1)
+                        }
+                        DropdownMenu(expanded = fileMenu, onDismissRequest = { fileMenu = false }) {
+                            @Composable
+                            fun Item(label: String, enabled: Boolean = true, action: () -> Unit) =
+                                DropdownMenuItem(text = { Text(label) }, enabled = enabled, onClick = { fileMenu = false; action() })
+                            Item("New") {
+                                replaceText(ScoreFiles.NEW_SCORE)
+                                setFile(ScoreFiles.Current(null, null, null))
+                            }
+                            Item("Open…") { openLy.launch(LY_TYPES) }
+                            Item("Save", enabled = modified || file.uri == null) {
+                                val uri = file.uri
+                                if (uri != null) saveTo(uri, file.name) else saveAs.launch(file.name ?: "score.ly")
+                            }
+                            Item("Save as…") { saveAs.launch(file.name ?: "score.ly") }
+                            HorizontalDivider()
+                            Item("Share PDF", enabled = exportPdf != null) {
+                                exportPdf?.let { ScoreFiles.share(context, it, "application/pdf", ScoreFiles.baseName(file.name) + ".pdf") }
+                            }
+                            Item("Share MIDI", enabled = midi != null) {
+                                midi?.let { m ->
+                                    val out = ScoreFiles.exportFile(context, ScoreFiles.baseName(file.name) + ".mid")
+                                    m.copyTo(out, overwrite = true)
+                                    ScoreFiles.share(context, out, "audio/midi", out.name)
+                                }
+                            }
+                            Item("Share LilyPond source") {
+                                val out = ScoreFiles.exportFile(context, ScoreFiles.baseName(file.name) + ".ly")
+                                out.writeText(text.text)
+                                ScoreFiles.share(context, out, "text/x-lilypond", out.name)
+                            }
+                            HorizontalDivider()
+                            Item("Sample: piano") { replaceText(SCORE_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
+                            Item("Sample: 15-page piece") { replaceText(LONG_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
+                        }
+                    }
                     error?.let { e -> TextButton(onClick = { jumpTo(e) }) { Text("Go to error") } }
                     if (entering) Button(onClick = { entering = false }) { Text("✓ Enter notes") }
                     else TextButton(onClick = { entering = true }) { Text("Enter notes") }
                     TextButton(onClick = {
                         pickImport.launch(IMPORT_TYPES)
                     }) { Text("Import") }
-                    TextButton(onClick = {
-                        undo.clear(); selectedOffset = null; selection = emptyList()
-                        longSample = !longSample
-                        text = TextFieldValue(if (longSample) LONG_SAMPLE else SCORE_SAMPLE)
-                    }) { Text(if (longSample) "Short sample" else "Long sample") }
+
                     if (sounds.size > 1) TextButton(onClick = { soundChoice = sounds[(sounds.indexOf(sound) + 1) % sounds.size] }) {
                         Text("Sound: ${sound.label}")
                     }
@@ -884,6 +961,9 @@ private fun MusicXmlImportDialog(onDismiss: () -> Unit, onImport: (LilyTools.Mus
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+/** What Open offers in the file picker: LilyPond files are often typed loosely. */
+private val LY_TYPES = arrayOf("text/x-lilypond", "text/plain", "application/octet-stream", "*/*")
 
 /** What Import offers in the file picker: MIDI and MusicXML (some apps label files loosely). */
 private val IMPORT_TYPES = arrayOf(

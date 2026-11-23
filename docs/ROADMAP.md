@@ -293,6 +293,27 @@ This plan covers the pieces needed before the editor and the editor phases after
     as pitched notes. The second test file (13 tracks, 96 pages) took 691 s on the
     tablet, so fewer staves are the biggest saving.
 
+- **0.19.0, chords, respelling, files:**
+  - `lilyedit.add_to_chord` adds notes, spelled for the key, to the note or chord at
+    a position (`c4` becomes `<c e>4`), with octaves kept in `\relative` and in
+    either voice. Enter notes has a Chord switch: notes from the keyboard, the piano
+    or a staff tap join the selected chord.
+  - `lilyedit.respell` writes a note's other spelling at the same pitch (`cis` and
+    `des`, `e` to `fes`, `c` to `bis`), also over a range, where notes without a
+    simple one are left alone. It is the edit bar's ♯⇄♭ button.
+  - Files: a "File ▾" menu in the Score tab with New, Open…, Save, Save as… (Android's
+    document picker, with access kept across restarts), Share PDF, Share MIDI and
+    Share LilyPond source (through a FileProvider), and the samples.
+    - The menu shows the file's name, with • for unsaved changes.
+    - The open file is remembered (`ScoreFiles`); the text is still autosaved to the
+      draft.
+    - The whole score's PDF is copied out after each render, for sharing.
+  - Still missing for files: `\include` of other files next to an opened file, since
+    a document picker gives no folder.
+  - Tests: 7 Python tests, plus an instrumented test of chord entry in voice 2, on
+    the chord after the `<< >>`, and a respelling, against LilyPond's engraving. The
+    file menu was checked on the emulator: save as, save, new, open, share.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 
