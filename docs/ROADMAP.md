@@ -430,6 +430,18 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.30.0, a look of its own** (`Theme.kt`):
+  - Light and dark colour schemes (slate blue, warm neutrals), following the system
+    or set in Settings. Colours the scheme doesn't name are in `AppColors`.
+  - The score's paper is never inverted: warm paper in light mode, gray in dark,
+    with the music black on both. Pages render onto a transparent bitmap
+    (`ScoreDocument.render(…, background)`) and `ScoreView` lays them on `paper`
+    over `desk`.
+  - A narrow band along the top reads ANDROLILY and holds ⚙ Settings (appearance,
+    keypad, diagnostics). It runs under the status bar.
+  - The source editor, note-entry strip, warnings and syntax colours follow the
+    theme. Selected buttons use the scheme's on-primary colour, so they stay
+    readable in dark mode.
 - **0.29.0, the keypad holds only notation:**
   - One set of note values (and the dot) for both modes: in Notes mode they are for
     new notes, otherwise they change the selected notes. The Edit and Notes pages

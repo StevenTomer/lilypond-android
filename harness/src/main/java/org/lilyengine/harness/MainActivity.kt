@@ -63,7 +63,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val engine = LilyPondEngine(this)
         keyboard = MidiKeyboard(this)
-        setContent { MaterialTheme { Root(engine, keyboard) } }
+        setContent {
+            var appearance by remember { mutableStateOf(Appearance.load(this)) }
+            AndroLilyTheme(appearance) {
+                Root(engine, keyboard, appearance) { appearance = it; Appearance.save(this, it) }
+            }
+        }
     }
 
     override fun onStart() {
@@ -78,16 +83,34 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard) {
+private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard, appearance: Appearance, onAppearance: (Appearance) -> Unit) {
     // The app is the score; the self-test, benchmark and MIDI device screens are
-    // diagnostics, opened from the File menu over it (the score stays as it was).
+    // diagnostics, opened from Settings over it (the score stays as it was).
     var diagnostics by rememberSaveable { mutableStateOf(false) }
-    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-        ScoreScreen(engine, keyboard, onDiagnostics = { diagnostics = true })
-        if (diagnostics) {
-            BackHandler { diagnostics = false }
-            Surface(Modifier.fillMaxSize()) { Diagnostics(engine, keyboard, onClose = { diagnostics = false }) }
+    var settings by remember { mutableStateOf(false) }
+    /** Bumped to open the keypad's settings (they live with the keypad, in the score screen). */
+    var keypadRequest by remember { mutableIntStateOf(0) }
+    // The band's colour also fills the status bar's strip above it.
+    Column(Modifier.fillMaxSize().background(appColors.band).safeDrawingPadding()) {
+        TitleBand(onSettings = { settings = true })
+        Surface(Modifier.weight(1f).fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
+            Box(Modifier.fillMaxSize()) {
+                ScoreScreen(engine, keyboard, keypadSettingsRequest = keypadRequest)
+                if (diagnostics) {
+                    BackHandler { diagnostics = false }
+                    Surface(Modifier.fillMaxSize()) { Diagnostics(engine, keyboard, onClose = { diagnostics = false }) }
+                }
+            }
         }
+    }
+    if (settings) {
+        AppSettingsDialog(
+            appearance = appearance,
+            onAppearance = onAppearance,
+            onKeypad = { settings = false; diagnostics = false; keypadRequest++ },
+            onDiagnostics = { settings = false; diagnostics = true },
+            onDismiss = { settings = false },
+        )
     }
 }
 

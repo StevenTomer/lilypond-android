@@ -37,15 +37,16 @@ class ScoreDocument private constructor(
 
     /**
      * Renders page [index] (0-based) [widthPx] pixels wide. Returns null if
-     * the document was closed meanwhile (a newer render replaced it).
+     * the document was closed meanwhile (a newer render replaced it). The
+     * music is drawn over [background].
      */
-    suspend fun render(index: Int, widthPx: Int): Bitmap? = withContext(dispatcher) {
+    suspend fun render(index: Int, widthPx: Int, background: Int = Color.WHITE): Bitmap? = withContext(dispatcher) {
         if (closed) return@withContext null
         val (w, h) = pageSizes[index]
         val width = widthPx.coerceIn(1, MAX_BITMAP_SIDE)
         val height = (width * h / w).roundToInt().coerceIn(1, MAX_BITMAP_SIDE)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        bitmap.eraseColor(Color.WHITE)
+        bitmap.eraseColor(background) // transparent: the view lays the page on its own paper colour
         renderer.openPage(index).use { page ->
             val m = Matrix().apply { setScale(width / page.width.toFloat(), height / page.height.toFloat()) }
             page.render(bitmap, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)

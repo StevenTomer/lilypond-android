@@ -119,7 +119,7 @@ import androidx.compose.runtime.collectAsState
  */
 @OptIn(FlowPreview::class)
 @Composable
-fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: () -> Unit = {}) {
+fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, keypadSettingsRequest: Int = 0) {
     val appFiles = LocalContext.current.filesDir
     val draftFile = remember { java.io.File(appFiles, DRAFT_FILE) }
     /** The source being edited: the saved draft if there is one, else the sample. */
@@ -546,7 +546,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
     }
 
     /** Colours in the source editor. */
-    val highlighting = remember { LilyHighlight.Transformation() }
+    val darkSource = appColors.dark
+    val highlighting = remember(darkSource) { LilyHighlight.Transformation(darkSource) }
 
     /** The marks on the selected note, or on every item of the range (articulations, dynamics, slurs…), as LilyTools.toggle names them. */
     var selectedMarks by remember { mutableStateOf(emptySet<String>()) }
@@ -1030,6 +1031,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
     var arrangeSlot by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var catalogOpen by remember { mutableStateOf(false) }
     var keypadSettings by remember { mutableStateOf(false) }
+    // Settings ▸ Keypad… (in the title band) asks for them.
+    LaunchedEffect(keypadSettingsRequest) { if (keypadSettingsRequest > 0) { keypadSettings = true; showKeypad = true } }
 
     /** Unless pinned, show [page]: its window if it floats, else its tab. */
     fun follow(page: String) {
@@ -1244,8 +1247,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
                             HorizontalDivider()
                             Item("Sample: piano") { replaceText(SCORE_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
                             Item("Sample: 15-page piece") { replaceText(LONG_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
-                            HorizontalDivider()
-                            Item("Diagnostics… (self-test, benchmark, MIDI devices)") { onDiagnostics() }
+
                         }
                     }
                 Gap()
@@ -1310,7 +1312,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
                         else {
                             TextButton(onClick = { pickFolder.launch(null) }) { Text("Choose its folder") }
                             // Android refuses Downloads itself (and the top of storage) as a folder to grant.
-                            Text("(a folder of its own, e.g. Download/scores)", fontSize = 12.sp, color = Color.Gray)
+                            Text("(a folder of its own, e.g. Download/scores)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     failedLog?.let { log ->
@@ -1322,7 +1324,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
                 uneven.firstOrNull()?.let { p ->
                     val line = SourcePositions.locationOf(text.text, p.start.coerceAtMost(text.text.length)).first
                     Row(
-                        Modifier.fillMaxWidth().background(Color(0xFFFFF3E0)).padding(horizontal = 8.dp),
+                        Modifier.fillMaxWidth().background(appColors.warning).padding(horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
@@ -1374,6 +1376,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
                     } else null,
                     modifier = Modifier.fillMaxWidth().weight(1f).onSizeChanged { viewHeight = it.height },
                     state = viewState,
+                    paper = appColors.paper,
+                    desk = appColors.desk,
                     onDragSteps = { g, steps ->
                         val o = g.origin
                         if (o != null && text.text == renderedText) {
@@ -1387,7 +1391,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
         }
         val editor: @Composable (Modifier) -> Unit = { m ->
           Column(m) {
-            Box(Modifier.weight(1f).background(Color(0xFFFAFAFA)).verticalScroll(rememberScrollState()).padding(8.dp)) {
+            Box(Modifier.weight(1f).background(appColors.editor).verticalScroll(rememberScrollState()).padding(8.dp)) {
                 BasicTextField(
                     value = text,
                     onValueChange = { v ->
@@ -1396,7 +1400,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
                         text = v
                         if (moved) selectFromCursor(v)
                     },
-                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
                     visualTransformation = highlighting,
                     // Password mode turns off word suggestions and learning (the text isn't hidden).
                     keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
@@ -1425,7 +1430,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: (
                     onSettings = { keypadSettings = true },
                 )
                 dockedPage?.let { p -> KeyGrid(p, keypad.columns, keypad.rows, commands, cell, arranging) { slot -> arrangeSlot = p.id to slot } }
-                    ?: Text("All pages are floating", fontSize = 12.sp, color = Color.Gray, modifier = Modifier.padding(8.dp))
+                    ?: Text("All pages are floating", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(8.dp))
             }
         }
         Column(Modifier.fillMaxSize()) {
@@ -1950,7 +1955,7 @@ private fun MidiImportDialog(
                 }
                 Text(
                     "Uses LilyPond's midi2ly. Notes that sound together in a track become chords.",
-                    fontSize = 12.sp, color = Color.Gray,
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },
@@ -1971,7 +1976,9 @@ private fun MidiImportDialog(
     )
 }
 
-private val ENTRY_BACKGROUND = Color(0xFFEEF3FA)
+/** The note-entry strip's (and piano's, lyrics bar's) background. */
+private val ENTRY_BACKGROUND: Color
+    @Composable @androidx.compose.runtime.ReadOnlyComposable get() = appColors.strip
 
 /** The on-screen piano with octave buttons. */
 @Composable
@@ -2063,7 +2070,7 @@ private fun LyricsBar(
             }
             Text(
                 "Words with spaces; a-part for syllables; word_ to hold it; _ to skip a note.",
-                fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(horizontal = 6.dp),
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 6.dp),
             )
         }
         OutlinedTextField(
@@ -2145,7 +2152,7 @@ private fun Tool(
 ) {
     val scheme = MaterialTheme.colorScheme
     val background = when { selected -> fill ?: scheme.primary; else -> Color.Transparent }
-    val fg = when { !enabled -> scheme.onSurface.copy(alpha = 0.3f); selected -> Color.White; else -> fill ?: scheme.primary }
+    val fg = when { !enabled -> scheme.onSurface.copy(alpha = 0.3f); selected -> if (fill != null) Color.White else scheme.onPrimary; else -> fill ?: scheme.primary }
     val shape = RoundedCornerShape(10.dp)
     WithTooltip(description.orEmpty()) { Box(
         Modifier.padding(horizontal = 1.dp).height(40.dp).defaultMinSize(minWidth = 40.dp)
@@ -2189,7 +2196,7 @@ private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItem
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (g == null) {
-            Text("Tap a note, or draw a box around notes with the pen.", fontSize = 13.sp, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("Tap a note, or draw a box around notes with the pen.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             return@Row
         }
         if (rangeItems >= 2) {

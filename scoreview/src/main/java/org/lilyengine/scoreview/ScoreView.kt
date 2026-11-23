@@ -168,6 +168,10 @@ fun ScoreView(
      * positive. A pen drags at once; a finger after a long press.
      */
     onDragSteps: ((Grob, Int) -> Unit)? = null,
+    /** The page's colour; the music is drawn on it as engraved (black). */
+    paper: Color = Color.White,
+    /** Around and between the pages. */
+    desk: Color = Color(0xFFE0E0E0),
     /**
      * Called when the pen draws a box (from anywhere but a selected note
      * head): the note heads and rests it touches, on one page. A finger
@@ -210,7 +214,7 @@ fun ScoreView(
     BoxWithConstraints(
         modifier
             .clipToBounds() // zoomed pages are wider than the view
-            .background(Color(0xFFE0E0E0))
+            .background(desk)
             .onSizeChanged { state.viewportWidth = it.width.toFloat() }
             .pointerInput(state) { pinchAndPan(state) },
     ) {
@@ -231,13 +235,13 @@ fun ScoreView(
                 val renderWidth = (with(density) { maxWidth.toPx() } * state.renderScale).roundToInt()
                 var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
                 LaunchedEffect(document, renderWidth) {
-                    document?.render(index, renderWidth)?.let { bitmap = it.asImageBitmap() }
+                    document?.render(index, renderWidth, android.graphics.Color.TRANSPARENT)?.let { bitmap = it.asImageBitmap() }
                 }
                 Box(
                     Modifier
                         .fillMaxWidth()
                         .aspectRatio(wPt / hPt)
-                        .background(Color.White)
+                        .background(paper)
                         .pointerInput(lookup, page, wPt) {
                             detectTapGestures { off ->
                                 val k = wPt / size.width

@@ -243,7 +243,7 @@ fun KeyButton(command: Command, size: androidx.compose.ui.unit.Dp, arranging: Bo
     val enabled = arranging || command.enabled()
     val selected = !arranging && enabled && command.selected()
     val tint = command.color()
-    val fg = when { !enabled -> scheme.onSurface.copy(alpha = 0.3f); selected -> Color.White; else -> tint ?: scheme.primary }
+    val fg = when { !enabled -> scheme.onSurface.copy(alpha = 0.3f); selected -> if (tint != null) Color.White else scheme.onPrimary; else -> tint ?: scheme.primary }
     val shape = RoundedCornerShape(10.dp)
     WithTooltip(command.name) {
         Box(
@@ -503,7 +503,7 @@ fun KeypadSettingsDialog(
                         else OutlinedButton(onClick = { onChange(config.copy(dock = value)) }, contentPadding = pad) { Text(label) }
                     }
                 }
-                Text("Automatic: along the bottom when the screen is taller than wide, at the side when wider.", fontSize = 12.sp, color = Color.Gray)
+                Text("Automatic: along the bottom when the screen is taller than wide, at the side when wider.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(Modifier.clickable { onChange(config.copy(follow = !config.follow)) }, verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = config.follow, onCheckedChange = { onChange(config.copy(follow = it)) })
                     Text("Pages follow along (the pin turns this off)")
