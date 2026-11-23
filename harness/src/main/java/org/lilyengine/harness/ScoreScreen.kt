@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -182,6 +183,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
     var transposing by remember { mutableStateOf(false) }
+    var inserting by remember { mutableStateOf(false) }
     /** Music copied with Copy or Cut, for Paste. */
     var clip by remember { mutableStateOf<LilyTools.Clip?>(null) }
     /** The score's settings while the Score settings dialog is open. */
@@ -869,6 +871,26 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         )
     }
 
+    if (inserting) {
+        InsertDialog(
+            canRepeat = range.isNotEmpty() || selectedOffset != null,
+            onDismiss = { inserting = false },
+            onInsert = { what ->
+                inserting = false
+                val offsets = range.ifEmpty { listOfNotNull(selectedOffset) }
+                if (offsets.isEmpty()) return@InsertDialog
+                when (what) {
+                    is Insertion.Change -> edit(if (what.after) offsets.max() else offsets.min()) { src, off ->
+                        tools.change(src, off, what.kind, what.written, what.after)
+                    }
+                    is Insertion.Words -> edit(offsets.min()) { src, off -> tools.addText(src, off, what.words, what.above) }
+                    is Insertion.Repeat -> edit(offsets.min()) { src, _ -> tools.repeat(src, offsets, what.times) }
+                }
+                range = emptyList()
+            },
+        )
+    }
+
     if (transposing) {
         // The range, else the selected note or chord, else everything.
         val sel = range.ifEmpty { listOfNotNull(selectedOffset) }.filter { it <= text.text.length }
@@ -1136,6 +1158,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             else edit { src, off -> tools.respell(src, off) }
                         },
                         onTranspose = { transposing = true },
+                        onInsert = { inserting = true },
                         onCopy = { copySelection(cut = false) },
                         onCut = { copySelection(cut = true) },
                         canPaste = clip != null,
@@ -1310,7 +1333,7 @@ private fun SettingsDialog(initial: LilyTools.ScoreSettings, onDismiss: () -> Un
         OutlinedTextField(value = value.orEmpty(), onValueChange = onChange, label = { Text(label) }, singleLine = true, modifier = Modifier.fillMaxWidth())
     @Composable
     fun Chips(options: List<Pair<String?, String>>, selected: String?, onSelect: (String?) -> Unit) =
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             for ((value, label) in options) {
                 val pad = PaddingValues(horizontal = 8.dp)
                 if (value == selected) Button(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
@@ -1345,6 +1368,100 @@ private fun SettingsDialog(initial: LilyTools.ScoreSettings, onDismiss: () -> Un
     )
 }
 
+/** What the Insert dialog puts into the music. */
+private sealed interface Insertion {
+    /** A clef, key, time, tempo or bar line ([kind]) written as [written]. */
+    data class Change(val kind: String, val written: String, val after: Boolean = false) : Insertion
+    data class Words(val words: String, val above: Boolean) : Insertion
+    data class Repeat(val times: Int) : Insertion
+}
+
+/** Clef, key, time, tempo and bar line changes, text, and repeats, at the selected note. */
+@Composable
+private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (Insertion) -> Unit) {
+    var what by remember { mutableStateOf("key") }
+    var clef by remember { mutableStateOf("bass") }
+    var tonic by remember { mutableStateOf("c") }
+    var minor by remember { mutableStateOf(false) }
+    var time by remember { mutableStateOf("3/4") }
+    var bpm by remember { mutableStateOf("100") }
+    var tempoWord by remember { mutableStateOf("") }
+    var bar by remember { mutableStateOf("||") }
+    var barAfter by remember { mutableStateOf(true) }
+    var words by remember { mutableStateOf("") }
+    var above by remember { mutableStateOf(true) }
+    var times by remember { mutableStateOf("2") }
+    @Composable
+    fun Chips(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) =
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for ((value, label) in options) {
+                val pad = PaddingValues(horizontal = 8.dp)
+                if (value == selected) Button(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
+                else OutlinedButton(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
+            }
+        }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Insert at the selected note") },
+        text = {
+            Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Chips(
+                    listOf("clef" to "Clef", "key" to "Key", "time" to "Time", "tempo" to "Tempo", "bar" to "Bar line", "text" to "Text") +
+                        if (canRepeat) listOf("repeat" to "Repeat") else emptyList(),
+                    what,
+                ) { what = it }
+                when (what) {
+                    "clef" -> Chips(listOf("treble", "bass", "alto", "tenor", "treble_8", "percussion").map { it to it.replace("_8", " 8vb") }, clef) { clef = it }
+                    "key" -> {
+                        Chips(KEYS.map { it to keyLabel(it) }, tonic) { tonic = it }
+                        Chips(listOf("major" to "major", "minor" to "minor"), if (minor) "minor" else "major") { minor = it == "minor" }
+                    }
+                    "time" -> Chips(TIMES.map { it to it }, time) { time = it }
+                    "tempo" -> {
+                        OutlinedTextField(value = tempoWord, onValueChange = { tempoWord = it }, label = { Text("Word (e.g. Allegro), optional") }, singleLine = true)
+                        OutlinedTextField(
+                            value = bpm, onValueChange = { bpm = it.filter(Char::isDigit).take(3) }, label = { Text("♩ = (optional)") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                    }
+                    "bar" -> {
+                        Chips(listOf("||" to "double", "|." to "final", ".|:" to "start repeat", ":|." to "end repeat", ":..:" to "end and start"), bar) { bar = it }
+                        Chips(listOf("before" to "before the note", "after" to "after it"), if (barAfter) "after" else "before") { barAfter = it == "after" }
+                    }
+                    "text" -> {
+                        OutlinedTextField(value = words, onValueChange = { words = it }, label = { Text("Text, e.g. dolce") }, singleLine = true)
+                        Chips(listOf("above" to "above", "below" to "below"), if (above) "above" else "below") { above = it == "above" }
+                    }
+                    "repeat" -> {
+                        Text("Repeats the selected notes (one voice), with repeat signs.", fontSize = 13.sp)
+                        Chips(listOf("2", "3", "4").map { it to "$it times" }, times) { times = it }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val insertion = when (what) {
+                    "clef" -> Insertion.Change("clef", if (clef.contains("_")) "\\clef \"$clef\"" else "\\clef $clef")
+                    "key" -> Insertion.Change("key", "\\key $tonic \\" + if (minor) "minor" else "major")
+                    "time" -> Insertion.Change("time", "\\time $time")
+                    "tempo" -> {
+                        val w = tempoWord.trim().takeIf { it.isNotEmpty() }?.let { "\"${it.replace("\"", "")}\"" }
+                        val n = bpm.toIntOrNull()?.let { "4 = $it" }
+                        if (w == null && n == null) null else Insertion.Change("tempo", "\\tempo " + listOfNotNull(w, n).joinToString(" "))
+                    }
+                    "bar" -> Insertion.Change("bar", "\\bar \"$bar\"", after = barAfter)
+                    "text" -> words.trim().takeIf { it.isNotEmpty() }?.let { Insertion.Words(it, above) }
+                    "repeat" -> Insertion.Repeat(times.toInt())
+                    else -> null
+                }
+                if (insertion != null) onInsert(insertion) else onDismiss()
+            }) { Text("Insert") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 /** A new score: template, title and composer, key, time, tempo, number of bars. */
 @Composable
 private fun NewScoreDialog(templates: List<Pair<String, String>>, onDismiss: () -> Unit, onCreate: (LilyTools.NewScore) -> Unit) {
@@ -1358,7 +1475,7 @@ private fun NewScoreDialog(templates: List<Pair<String, String>>, onDismiss: () 
     var bars by remember { mutableStateOf("8") }
     @Composable
     fun Chips(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) =
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             for ((value, label) in options) {
                 val pad = PaddingValues(horizontal = 8.dp)
                 if (value == selected) Button(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
@@ -1893,6 +2010,7 @@ private fun EditBar(
     onDot: () -> Unit,
     onDelete: () -> Unit,
     onTranspose: () -> Unit,
+    onInsert: () -> Unit,
     onCopy: () -> Unit,
     onCut: () -> Unit,
     canPaste: Boolean,
@@ -1924,6 +2042,7 @@ private fun EditBar(
         B("Copy", enabled, onCopy)
         B("Cut", enabled, onCut)
         B("Paste", enabled && canPaste, onPaste)
+        B("Insert…", enabled, onInsert)
         B("Transpose…", true, onTranspose)
         B("Add voice", enabled, onAddVoice)
         B("Remove voice", enabled && inVoice, onRemoveVoice)

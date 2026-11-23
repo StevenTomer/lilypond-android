@@ -698,5 +698,32 @@ class CopyPaste(unittest.TestCase):
             e.copy(src, [src.index("d'"), src.index("e2")])
 
 
+
+class Changes(unittest.TestCase):
+    SRC = "\\relative c'' { \\key g \\major c4 d e f | g a b c | d1 }"
+
+    def test_key_change_replaced_not_doubled(self):
+        out = e.change(self.SRC, self.SRC.index("g a"), "key", "\\key d \\major")
+        out = e.change(out, out.index("g a"), "key", "\\key bes \\major")
+        self.assertIn("| \\key bes \\major g a b c |", out)
+        self.assertEqual(out.count("\\key"), 2)
+        self.assertEqual(absolute(out)[-5:], absolute(self.SRC)[-5:])  # g a b c d, after the change
+
+    def test_clef_time_tempo_and_final_bar(self):
+        out = e.change(self.SRC, self.SRC.index("c4"), "time", "\\time 3/4")
+        out = e.change(out, out.index("g a"), "clef", "\\clef bass")
+        out = e.change(out, out.index("d1"), "bar", '\\bar "|."', after=True)
+        self.assertIn("\\major \\time 3/4 c4", out)
+        self.assertIn("| \\clef bass g a", out)
+        self.assertIn('d1 \\bar "|." }', out)
+
+    def test_text_and_repeat(self):
+        self.assertIn('e^"dolce" f', e.add_text(self.SRC, self.SRC.index("e f"), "dolce"))
+        self.assertIn('e_"rit." f', e.add_text(self.SRC, self.SRC.index("e f"), "rit.", above=False))
+        out = e.repeat(self.SRC, [self.SRC.index("g a"), self.SRC.index("c |")])
+        self.assertIn("\\repeat volta 2 { g a b c } | d1", out)
+        self.assertEqual(absolute(out), absolute(self.SRC))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -403,6 +403,21 @@ This plan covers the pieces needed before the editor and the editor phases after
     US Letter landscape in the PDF, and voice 2's bar pasted after the melody,
     checked in LilyPond's engraving.
 
+- **0.25.0, changes in the music:**
+  - Insert… in the edit bar puts things in at the selected note:
+    - a clef, key, time or tempo change, before the note; one of the same kind
+      already there is replaced, not doubled (`lilyedit.change`);
+    - bar lines (double, final, repeat signs), before or after the note;
+    - text above or below (`^"dolce"`, `lilyedit.add_text`);
+    - `\repeat volta n { … }` around the selected range (`lilyedit.repeat`).
+  - A `\key` has a pitch of its own, so the octave check gives changes' pitches
+    their own value and keeps every other note sounding as before.
+  - The dialogs' choice chips wrap onto more lines, so every option is visible on a
+    narrow screen.
+  - Tests: 3 Python tests, plus an instrumented test (key, clef, final bar, text and
+    repeat engrave cleanly, with an extra key signature and clef, and the notes as
+    before).
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

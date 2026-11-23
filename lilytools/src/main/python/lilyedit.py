@@ -1821,6 +1821,74 @@ def paste(text, pos, fragment, pitches, after=True):
 
 
 # --------------------------------------------------------------------------
+# Changes in the music: clef, key, time, tempo, bar lines, text, repeats
+
+# Each kind of change, and how to find one already written in the same place.
+_CHANGES = {
+    "clef": re.compile(r'\\clef\s+(?:"[^"]*"|[A-Za-z_0-9^]+)'),
+    "key": re.compile(r"\\key\s+[a-z]+\s+\\[a-z]+"),
+    "time": re.compile(r"\\time\s+\d+\s*/\s*\d+"),
+    "tempo": re.compile(r'\\tempo\s+(?:"[^"]*"\s*)?(?:\d+\.*\s*=\s*\d+(?:\s*-\s*\d+)?)?'),
+    "bar": re.compile(r'\\bar\s+"[^"]*"'),
+}
+
+
+def change(text, pos, kind, written, after=False):
+    """Writes a change (`written`, e.g. '\\key d \\major') before the item at
+    `pos`, or after it with `after` (for bar lines at the end of a passage).
+    One of the same kind already there (between that item and its neighbour)
+    is replaced. Returns the text."""
+    items = _items(text)
+    k = _item_index(text, items, pos)
+    it = items[k][0]
+    if after:
+        at = _item_end(text, it)
+        nxt = items[k + 1][0] if k + 1 < len(items) else None
+        gap = (at, _item_start(text, nxt) if nxt is not None else at)
+    else:
+        at = _item_start(text, it)
+        prev = items[k - 1][0] if k > 0 else None
+        gap = (_item_end(text, prev) if prev is not None else at, at)
+    before = notes(text)
+    m = _CHANGES[kind].search(text, gap[0], gap[1]) if gap[1] > gap[0] else None
+    if m and _same_sequence(text, gap[0], gap[1]):
+        old = (m.start(), m.end())
+        new_at = m.start()
+        text = text[:m.start()] + written + text[m.end():]
+    else:
+        old = (at, at)
+        new_at = at + 1 if after else at
+        text = text[:at] + (" " + written if after else written + " ") + text[at:]
+    # A \\key has a pitch of its own: the changes' pitches stay as written,
+    # every other note sounds as before.
+    kept = iter(n.key() for n in before if not (old[0] <= n.pos < old[1]))
+    desired = [n.key() if new_at <= n.pos < new_at + len(written) else next(kept) for n in notes(text)]
+    return _fix_octaves(text, desired)
+
+
+def add_text(text, pos, words, above=True):
+    """Text over (or under) the note, chord or rest at `pos`: ^"dolce"."""
+    items = _items(text)
+    it = items[_item_index(text, items, pos)][0]
+    end = _item_end(text, it)
+    return text[:end] + ("^" if above else "_") + _string(words) + text[end:]
+
+
+def repeat(text, positions, times=2):
+    """Puts the items at `positions` (one stretch of one voice) in
+    \\repeat volta `times` { … }."""
+    items = _items(text)
+    ks = sorted({_item_index(text, items, p) for p in positions})
+    start = _item_start(text, items[ks[0]][0])
+    end = _item_end(text, items[ks[-1]][0])
+    if not _same_sequence(text, start, end):
+        raise ValueError("select notes in one voice")
+    before = notes(text)
+    text = text[:start] + "\\repeat volta %d { " % int(times) + text[start:end] + " }" + text[end:]
+    return _fix_octaves(text, [n.key() for n in before])
+
+
+# --------------------------------------------------------------------------
 # Entry point for Kotlin: one JSON request in, one JSON reply out.
 
 
@@ -1915,6 +1983,12 @@ def call(request_json):
                                     [(n, Fraction(a).limit_denominator(4), o) for n, a, o in req["pitches"]],
                                     req.get("after", True))
             return json.dumps({"text": out, "start": start, "end": end})
+        elif op == "change":
+            out = change(text, req["pos"], req["kind"], req["written"], req.get("after", False))
+        elif op == "add_text":
+            out = add_text(text, req["pos"], req["words"], req.get("above", True))
+        elif op == "repeat":
+            out = repeat(text, req["positions"], req.get("times", 2))
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":

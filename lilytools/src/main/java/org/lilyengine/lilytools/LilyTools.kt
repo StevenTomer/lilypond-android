@@ -360,6 +360,31 @@ class LilyTools(context: Context) {
         Recorded(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")), result.offsetByCodePoints(0, reply.getInt("end")))
     }
 
+    /**
+     * A change written before the item at [offset] (after it with [after]):
+     * [kind] "clef", "key", "time", "tempo" or "bar", and [written] as
+     * LilyPond has it ("\\key d \\major"). One of the same kind already there
+     * is replaced.
+     */
+    suspend fun change(text: String, offset: Int, kind: String, written: String, after: Boolean = false): TextEdit = call(
+        text,
+        JSONObject().put("op", "change").put("pos", text.codePointCount(0, offset))
+            .put("kind", kind).put("written", written).put("after", after),
+    )
+
+    /** Text over (or under) the item at [offset]: ^"dolce". */
+    suspend fun addText(text: String, offset: Int, words: String, above: Boolean = true): TextEdit = call(
+        text,
+        JSONObject().put("op", "add_text").put("pos", text.codePointCount(0, offset)).put("words", words).put("above", above),
+    )
+
+    /** Puts the items at [offsets] (one stretch of one voice) in \\repeat volta [times] { … }. */
+    suspend fun repeat(text: String, offsets: List<Int>, times: Int = 2): TextEdit = call(
+        text,
+        JSONObject().put("op", "repeat").put("times", times)
+            .put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) })),
+    )
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))

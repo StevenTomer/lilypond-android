@@ -313,6 +313,25 @@ class LilyToolsTest {
     }
 
     @Test
+    fun keyClefBarTextAndRepeatEngrave() = runBlocking {
+        val src = "\\relative c'' { \\key g \\major c4 d e f | g a b c | d1 }"
+        var text = src
+        text = tools.change(text, text.indexOf("g a"), "key", "\\key bes \\major").applyTo(text)
+        text = tools.change(text, text.indexOf("g a"), "clef", "\\clef alto").applyTo(text)
+        text = tools.change(text, text.indexOf("d1"), "bar", "\\bar \"|.\"", after = true).applyTo(text)
+        text = tools.addText(text, text.indexOf("e f"), "dolce").applyTo(text)
+        text = tools.repeat(text, listOf(text.indexOf("c4"), text.indexOf("f |"))).applyTo(text)
+        val before = engine.render(src)
+        val r = engine.render(text)
+        assertTrue(r.log, r.success)
+        assertTrue(r.log, r.diagnostics.isEmpty())
+        fun count(res: LilyPondEngine.Result, type: String) = res.scoreMap!!.grobs.count { it.type == type }
+        assertTrue(text, count(r, "KeySignature") > count(before, "KeySignature"))
+        assertTrue(text, count(r, "Clef") > count(before, "Clef"))
+        assertEquals(heads(src), heads(text)) // the notes sound as before
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)
