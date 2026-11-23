@@ -223,6 +223,22 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
             .map { it.third }.toList()
     }
 
+    /**
+     * The voices on [g]'s staff at its moment, each with the note or rest it
+     * has sounding then (its first note head, for a chord): for switching
+     * note entry between voices. In voice order; [g]'s own voice included.
+     * Only one entry when the staff has a single voice there.
+     */
+    fun voicesAt(g: Grob): List<Grob> {
+        val m = g.momentValue ?: return listOf(g)
+        return soundingAt(m)
+            .filter { (it.type == "NoteHead" || it.type == "Rest") && it.staff == g.staff && it.origin != null }
+            .groupBy { it.voice }
+            .mapNotNull { (_, gs) -> if (g in gs) g else gs.minByOrNull { it.origin!!.char + it.origin!!.line * 10_000 } }
+            // A << \\ >> passage names its voices "1", "2"…: that order; others by context.
+            .sortedWith(compareBy({ it.voiceId?.toIntOrNull() ?: Int.MAX_VALUE }, { it.voice ?: Int.MAX_VALUE }))
+    }
+
     companion object {
         /** A pitch as LilyPond writes it (Dutch names, absolute octave marks): step 0 = c, octave 0 = from middle C up. */
         fun pitchName(step: Int, alterWholeTones: Double, octave: Int): String {

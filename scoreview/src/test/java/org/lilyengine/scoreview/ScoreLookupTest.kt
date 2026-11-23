@@ -60,6 +60,18 @@ class ScoreLookupTest {
     }
 
     @Test
+    fun voicesAtAMoment() {
+        // Voice 1's e'' (second beat) sounds over voice 2's half note c'.
+        val e = map.grobs.filter { it.type == "NoteHead" && it.pitch?.name == "e''" && it.voiceId == "1" }.minBy { it.momentValue!! }
+        val voices = lookup.voicesAt(e)
+        assertEquals(listOf("1", "2"), voices.map { it.voiceId })
+        assertEquals(e, voices[0])
+        assertEquals("c'", voices[1].pitch!!.name)
+        // And back from voice 2 to voice 1's note at the same moment (the first, c'').
+        assertEquals("c''", lookup.voicesAt(voices[1]).first { it.voiceId == "1" }.pitch!!.name)
+    }
+
+    @Test
     fun tapOnANoteHeadFindsIt() {
         val g = head("c''", "1")
         val (x, y) = centre(g)

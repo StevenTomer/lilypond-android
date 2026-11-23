@@ -39,6 +39,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
@@ -878,6 +881,12 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         verseApplied = verseList.getOrElse(i) { "" }
                     },
                 ) else if (entering) EntryBar(
+                    voices = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
+                        ?.takeIf { text.text == renderedText }
+                        ?.let { g -> lookup?.voicesAt(g)?.takeIf { it.size > 1 }?.map { it to (it.sameVoiceAs(g)) } }
+                        .orEmpty(),
+                    voiceColors = lookup?.map?.grobs?.mapNotNull { it.voice }?.distinct()?.sorted().orEmpty(),
+                    onVoice = { g -> onTap(g) },
                     duration = entryDuration,
                     dot = entryDot,
                     keyboardName = connectedKeyboard?.let(MidiKeyboard::name),
@@ -1224,6 +1233,10 @@ private fun MidiImportDialog(
  */
 @Composable
 private fun EntryBar(
+    /** The voices on the selected note's staff at its moment, with the one it is in; empty for one voice. */
+    voices: List<Pair<Grob, Boolean>>,
+    voiceColors: List<Int>,
+    onVoice: (Grob) -> Unit,
     duration: String,
     dot: Boolean,
     keyboardName: String?,
@@ -1245,6 +1258,17 @@ private fun EntryBar(
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (voices.isNotEmpty()) {
+                // Switch the voice new notes go into: its note at the same moment is selected.
+                voices.forEachIndexed { i, (g, current) ->
+                    val label = "Voice " + (g.voiceId?.toIntOrNull() ?: (i + 1))
+                    val color = voiceColor(g.voice, voiceColors)
+                    val pad = PaddingValues(horizontal = 10.dp)
+                    if (current) Button(onClick = { onVoice(g) }, contentPadding = pad, colors = ButtonDefaults.buttonColors(containerColor = color)) { Text(label) }
+                    else OutlinedButton(onClick = { onVoice(g) }, contentPadding = pad) { Text(label, color = color) }
+                }
+                Spacer(Modifier.width(8.dp))
+            }
             Text("New notes:", fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
             for (d in listOf("1", "2", "4", "8", "16", "32")) {
                 if (d == duration) Button(onClick = { onDuration(d) }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(d) }
@@ -1419,6 +1443,9 @@ private const val DRAFT_FILE = "score-draft.ly"
 
 /** How long after a change the draft is saved. */
 private const val DRAFT_SAVE_DELAY_MS = 1000L
+
+/** Whether two note heads or rests are in the same voice. */
+private fun Grob.sameVoiceAs(other: Grob) = voice == other.voice && voiceId == other.voiceId
 
 /** Where word [n] (0-based, separated by spaces) starts in [text]. */
 private fun wordStart(text: String, n: Int): Int {
