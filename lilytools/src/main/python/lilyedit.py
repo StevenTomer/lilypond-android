@@ -554,11 +554,19 @@ def multi(text, positions, op, arg=None):
     the dot off if all have one), "toggle" (arg: a mark; added to every item,
     or taken off if all have it), "delete" (new positions: none)."""
     ids = _identify(text, positions)
-    if op in ("step", "alter"):
+    if op in ("step", "alter", "respell"):
         notes_ = notes(text)
         targets = sorted({notes_[k].pos for kind, k in ids if kind == "n"}, reverse=True)
         for p in targets:
-            text = step(text, p, arg) if op == "step" else set_alter(text, p, arg)
+            if op == "step":
+                text = step(text, p, arg)
+            elif op == "alter":
+                text = set_alter(text, p, arg)
+            else:
+                try:
+                    text = respell(text, p)
+                except ValueError:
+                    pass  # d, g, a have no simple other spelling: left as they are
     elif op == "duration":
         original = _items(text)
         found = _item_starts(text, positions)
@@ -708,6 +716,61 @@ def insert(text, pos, keys, duration=None, after=False):
                + [(n, a, o) for n, a, o in spelled]
                + [n.key() for n in before if n.pos >= pos])
     return _fix_octaves(text, desired), pos + len(pre)
+
+
+# --------------------------------------------------------------------------
+# Chords and spelling
+
+def add_to_chord(text, pos, keys):
+    """Adds notes (MIDI keys, spelled for the key there) to the note or
+    chord at `pos`: c4 becomes <c e>4, <c e>4 becomes <c e g>4. Everything
+    else keeps sounding the same. Returns (text, start of the chord)."""
+    items = _items(text)
+    it = items[_item_index(text, items, pos)][0]
+    start = _item_start(text, it)
+    if _is_rest(text, it):
+        raise ValueError("a rest can't take chord notes")
+    before = notes(text)
+    key = key_at(text, pos)
+    spelled = [spell(k, key) for k in sorted(set(keys))]
+    name = _language_writer(text)
+    names = " ".join(name(n, a) for n, a, _ in spelled)
+    if text[start] == "<":  # a chord: the new notes go in before its '>'
+        close = it.pos if text[it.pos] == ">" else text.index(">", start)
+        at = close
+        text = text[:at] + " " + names + text[at:]
+        new_start = start
+    else:  # a single note: it becomes a chord
+        n = before[_note_index(before, start)]
+        text = text[:n.pos] + "<" + text[n.pos:n.end] + " " + names + ">" + text[n.end:]
+        at = n.end + 1  # where the new names begin, after the "<" was added
+        new_start = start
+    inserted = len([x for x in before if x.pos < (at if text[start] != "<" else at)])
+    # the new notes come right after the chord's existing ones, in source order
+    desired = ([x.key() for x in before[:inserted]] + [(n, a, o) for n, a, o in spelled]
+               + [x.key() for x in before[inserted:]])
+    return _fix_octaves(text, desired), new_start
+
+
+def respell(text, pos):
+    """Writes the note at `pos` with its other spelling, keeping its pitch:
+    cis <-> des, e -> fes, c -> bis, b -> ces, f -> eis."""
+    before = notes(text)
+    n = before[_note_index(before, pos)]
+    semis = [0, 2, 4, 5, 7, 9, 11]
+    up_step, down_step = (n.note + 1) % 7, (n.note - 1) % 7
+    up_gap = (semis[up_step] - semis[n.note]) % 12   # semitones to the next letter
+    down_gap = (semis[n.note] - semis[down_step]) % 12
+    candidates = []
+    if n.alter >= 0:  # sharps and naturals: the letter above, flatter
+        candidates.append((up_step, n.alter - Fraction(up_gap, 2), n.octave + (1 if n.note == 6 else 0)))
+    if n.alter <= 0:  # flats and naturals: the letter below, sharper
+        candidates.append((down_step, n.alter + Fraction(down_gap, 2), n.octave - (1 if n.note == 0 else 0)))
+    usable = [c for c in candidates if abs(c[1]) <= Fraction(1, 2)]
+    if not usable:
+        raise ValueError("no simpler other spelling")
+    note, alter, octave = usable[0]
+    return set_pitch(text, pos, note, alter, octave)
 
 
 # --------------------------------------------------------------------------
@@ -1092,6 +1155,13 @@ def call(request_json):
             if r is None:
                 return json.dumps({"none": True})
             return json.dumps({"text": r[0], "start": r[1]})
+        elif op == "add_to_chord":
+            if "steps" in req:
+                req["keys"] = keys_for_steps(text, req["pos"], req["steps"])
+            out, start = add_to_chord(text, req["pos"], req.get("keys", []))
+            return json.dumps({"text": out, "start": start, "keys": req.get("keys", [])})
+        elif op == "respell":
+            out = respell(text, req["pos"])
         elif op == "voice_lengths":
             return json.dumps({"passages": [
                 {"start": a, "end": b, "lengths": [str(x) for x in lengths]}

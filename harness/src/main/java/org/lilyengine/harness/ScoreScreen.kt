@@ -193,6 +193,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var entryDot by remember { mutableStateOf(false) }
     /** New notes take the place of rests after the selected note (as in a voice just added). */
     var fillRests by remember { mutableStateOf(true) }
+    /** New notes join the selected note or chord instead of following it. */
+    var chordMode by remember { mutableStateOf(false) }
     /** Notes, chords and rests waiting to be entered, in playing order. */
     val entries = remember { Channel<Entry>(Channel.UNLIMITED) }
     val connectedKeyboard by keyboard.connected.collectAsState()
@@ -494,10 +496,15 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 val selected = selectedOffset?.takeIf { it < before.length }
                 val at = selected ?: text.selection.start
                 val duration = entryDuration + if (entryDot) "." else ""
-                val r = when (entry) {
-                    is Entry.Keys -> tools.insert(before, at, entry.keys, duration, after = selected != null, fill = fillRests)
-                    is Entry.Step -> tools.insertStep(before, at, entry.step, entry.octave, duration, after = selected != null, fill = fillRests)
+                val toChord = chordMode && selected != null
+                val r = when {
+                    entry is Entry.Keys && toChord && entry.keys.isNotEmpty() -> tools.addToChord(before, at, entry.keys)
+                    entry is Entry.Keys -> tools.insert(before, at, entry.keys, duration, after = selected != null, fill = fillRests)
+                    entry is Entry.Step && toChord -> tools.addStepToChord(before, at, entry.step, entry.octave)
+                        .also { keyboard.play(it.keys, 300) }
+                    entry is Entry.Step -> tools.insertStep(before, at, entry.step, entry.octave, duration, after = selected != null, fill = fillRests)
                         .also { keyboard.play(it.keys, 300) } // the note tapped on the staff, as entered
+                    else -> error("unreachable")
                 }
                 undo.addLast(before)
                 val after = r.edit.applyTo(before)
@@ -681,6 +688,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     onRest = { entries.trySend(Entry.Keys(emptyList())) },
                     fillRests = fillRests,
                     onFillRests = { fillRests = !fillRests },
+                    chordMode = chordMode,
+                    onChordMode = { chordMode = !chordMode },
                     onUndo = ::undoLast,
                 ) else {
                     val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
@@ -716,6 +725,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         onDelete = {
                             if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) }
                             else edit { src, off -> tools.delete(src, off) }
+                        },
+                        onRespell = {
+                            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Respell) }
+                            else edit { src, off -> tools.respell(src, off) }
                         },
                         onAddVoice = ::addVoice,
                         inVoice = selected?.voiceId?.isNotEmpty() == true,
@@ -965,6 +978,9 @@ private fun EntryBar(
     onRest: () -> Unit,
     fillRests: Boolean,
     onFillRests: () -> Unit,
+    /** Notes join the selected note or chord. */
+    chordMode: Boolean,
+    onChordMode: () -> Unit,
     onUndo: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 4.dp, vertical = 2.dp)) {
@@ -983,9 +999,11 @@ private fun EntryBar(
             OutlinedButton(onClick = onRest, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Rest") }
             if (fillRests) Button(onClick = onFillRests, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Fill rests") }
             else OutlinedButton(onClick = onFillRests, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Fill rests") }
+            if (chordMode) Button(onClick = onChordMode, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Chord") }
+            else OutlinedButton(onClick = onChordMode, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Chord") }
             OutlinedButton(onClick = onUndo, enabled = canUndo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Undo") }
             Text(
-                (if (hasPlace) "After the selected note. " else "At the cursor. ") +
+                (if (hasPlace && chordMode) "Into the selected chord. " else if (hasPlace) "After the selected note. " else "At the cursor. ") +
                     (keyboardName?.let { "Play on $it, tap the piano, or tap a line or space on the staff." }
                         ?: "Tap the piano or a line or space on the staff, or plug in a MIDI keyboard."),
                 fontSize = 12.sp, color = Color.DarkGray, modifier = Modifier.padding(horizontal = 6.dp),
@@ -1116,6 +1134,8 @@ private fun EditBar(
     onStep: (Int) -> Unit,
     /** A new accidental: 1 sharp, -1 flat, 0 natural. */
     onAlter: (Int) -> Unit,
+    /** The other spelling, same pitch (cis <-> des). */
+    onRespell: () -> Unit,
     onDuration: (String) -> Unit,
     onDot: () -> Unit,
     onDelete: () -> Unit,
@@ -1137,6 +1157,7 @@ private fun EditBar(
         B("♯", pitched) { onAlter(1) }
         B("♭", pitched) { onAlter(-1) }
         B("♮", pitched) { onAlter(0) }
+        B("♯⇄♭", pitched, onRespell)
         for (d in listOf("1", "2", "4", "8", "16")) B(d, enabled) { onDuration(d) }
         B("Dot", enabled, onDot)
         B("Delete", enabled, onDelete)

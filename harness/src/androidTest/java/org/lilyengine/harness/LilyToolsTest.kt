@@ -202,6 +202,27 @@ class LilyToolsTest {
     }
 
     @Test
+    fun chordAndRespellInTwoVoices() = runBlocking {
+        var src = POLY_SAMPLE
+        // Voice 2's c' (written c,2) becomes <c e>: a chord in voice 2 only.
+        val r = tools.addToChord(src, src.indexOf("c,2"), listOf(64))
+        src = r.edit.applyTo(src)
+        assertEquals('<', src[r.start])
+        // The chord after the << >> gets a g'' on top.
+        src = tools.addToChord(src, src.indexOf("<g b d>"), listOf(79)).edit.applyTo(src)
+        // And voice 1's first e'' is written fes''.
+        src = tools.respell(src, src.indexOf("e g e")).applyTo(src)
+        assertTrue(src, src.contains("fes"))
+
+        val after = heads(src)
+        val before = heads(POLY_SAMPLE)
+        assertEquals(listOf("c'", "e'", "g'"), after["2"])
+        // Voice 1 as before, but one e'' is now written fes'' (the same pitch).
+        assertEquals((before["1"]!! - "e''" + "fes''").sorted(), after["1"]!!.sorted())
+        assertEquals((before[""]!! + "g''").sorted(), after[""]!!.sorted())
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

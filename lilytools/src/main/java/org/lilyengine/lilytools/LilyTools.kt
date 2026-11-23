@@ -99,6 +99,8 @@ class LilyTools(context: Context) {
         /** Adds the mark ([toggle]'s names) to every item, or takes it off if all have it. */
         class Toggle(what: String) : RangeOp("toggle", what)
         object Delete : RangeOp("delete", null)
+        /** Each note's other spelling (cis <-> des); notes without a simple one are left alone. */
+        object Respell : RangeOp("respell", null)
     }
 
     /**
@@ -239,6 +241,33 @@ class LilyTools(context: Context) {
     ): Inserted = insert(
         text, offset, JSONObject().put("steps", org.json.JSONArray(listOf(org.json.JSONArray(listOf(step, octave))))),
         duration, after, fill,
+    )
+
+    /**
+     * Adds notes (MIDI keys, spelled for the key there) to the note or chord
+     * at [offset]: c4 becomes <c e>4. [Inserted.start] is the chord's start.
+     */
+    suspend fun addToChord(text: String, offset: Int, keys: List<Int>): Inserted =
+        chordCall(text, offset, JSONObject().put("keys", org.json.JSONArray(keys)))
+
+    /** Like [addToChord], for a note given by its place on the staff (see [insertStep]). */
+    suspend fun addStepToChord(text: String, offset: Int, step: Int, octave: Int): Inserted =
+        chordCall(text, offset, JSONObject().put("steps", org.json.JSONArray(listOf(org.json.JSONArray(listOf(step, octave))))))
+
+    private suspend fun chordCall(text: String, offset: Int, what: JSONObject): Inserted = withContext(dispatcher) {
+        val request = JSONObject().put("op", "add_to_chord").put("text", text).put("pos", text.codePointCount(0, offset))
+        for (k in what.keys()) request.put(k, what.get(k))
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val result = reply.getString("text")
+        val keys = reply.optJSONArray("keys")?.let { a -> List(a.length()) { a.getInt(it) } }.orEmpty()
+        Inserted(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")), keys)
+    }
+
+    /** Writes the note at [offset] with its other spelling, same pitch: cis <-> des, e -> fes, c -> bis. */
+    suspend fun respell(text: String, offset: Int): TextEdit = call(
+        text,
+        JSONObject().put("op", "respell").put("pos", text.codePointCount(0, offset)),
     )
 
     private suspend fun insert(

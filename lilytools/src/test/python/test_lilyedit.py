@@ -451,5 +451,49 @@ class VoiceLengths(unittest.TestCase):
         self.assertEqual(reply["passages"][0]["lengths"], ["1", "1/2"])
 
 
+
+class ChordsAndSpelling(unittest.TestCase):
+    SRC = "\\relative c'' { \\key g \\major c4 <e g> b2 | d1 }"
+
+    def test_note_becomes_a_chord(self):
+        out, start = e.add_to_chord(self.SRC, self.SRC.index("c4"), [76])
+        self.assertIn("<c e>4 <e g> b2", out)
+        self.assertEqual(out[start], "<")
+        self.assertEqual(absolute(e.multi(out, [start], "delete")[0]), absolute(e.delete(self.SRC, self.SRC.index("c4"))))
+
+    def test_chord_grows_and_the_rest_sounds_the_same(self):
+        out, _ = e.add_to_chord(self.SRC, self.SRC.index("<e"), [72])
+        added = [k for k in absolute(out) if k not in absolute(self.SRC)]
+        self.assertEqual(added, [])  # c'' is already there; the others stay put
+        self.assertEqual(len(absolute(out)), len(absolute(self.SRC)) + 1)
+        self.assertEqual(absolute(out)[-2:], absolute(self.SRC)[-2:])
+
+    def test_spelled_for_the_key(self):
+        out, _ = e.add_to_chord(self.SRC, self.SRC.index("b2"), [66])
+        self.assertIn("<b fis", out)
+
+    def test_rest_refused(self):
+        with self.assertRaises(ValueError):
+            e.add_to_chord("{ r4 }", 2, [60])
+
+    def test_respell(self):
+        for before, after in [("cis'4", "des'4"), ("des'4", "cis'4"), ("e'4", "fes'4"),
+                              ("c'4", "bis4"), ("b4", "ces'4"), ("f'4", "eis'4")]:
+            self.assertEqual(e.respell("{ %s }" % before, 2), "{ %s }" % after)
+        with self.assertRaises(ValueError):
+            e.respell("{ d'4 }", 2)
+
+    def test_respell_in_relative_keeps_the_pitches_after(self):
+        src = "\\relative c'' { cis4 d e }"
+        out = e.respell(src, src.index("cis"))
+        self.assertEqual(absolute(out)[2:], absolute(src)[2:])
+        self.assertIn("des", out)
+
+    def test_respell_a_range_skips_what_has_no_other_spelling(self):
+        src = "{ cis'4 d' ees' }"
+        out, _ = e.multi(src, [2, src.index("d'"), src.index("ees")], "respell")
+        self.assertEqual(out, "{ des'4 d' dis' }")
+
+
 if __name__ == "__main__":
     unittest.main()
