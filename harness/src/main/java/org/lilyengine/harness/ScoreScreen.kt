@@ -420,6 +420,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         uneven = runCatching { tools.voiceLengths(text.text) }.getOrDefault(emptyList())
     }
 
+    /** Colours in the source editor. */
+    val highlighting = remember { LilyHighlight.Transformation() }
+
     /** The marks on the selected note, or on every item of the range (articulations, dynamics, slurs…), as LilyTools.toggle names them. */
     var selectedMarks by remember { mutableStateOf(emptySet<String>()) }
     LaunchedEffect(selectedOffset, range, text.text) {
@@ -856,6 +859,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                         if (moved) selectFromCursor(v)
                     },
                     textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+                    visualTransformation = highlighting,
                     // Password mode turns off word suggestions and learning (the text isn't hidden).
                     keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth().focusRequester(focus),
