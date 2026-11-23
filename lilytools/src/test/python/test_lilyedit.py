@@ -633,5 +633,21 @@ class Recording(unittest.TestCase):
         self.assertEqual(e.time_at("{ c4 }", 3), Fraction(1))
 
 
+
+class NewScores(unittest.TestCase):
+    def test_every_template_has_its_parts_and_bars(self):
+        for t in e.TEMPLATES:
+            text = e.new_score(t, "T", "C", "bes", "minor", "6/8", None, 2)
+            self.assertIn("\\key bes \\minor", text)
+            self.assertIn("r2. |\n  r2. \\bar", text)  # two bars of 6/8 rests per part
+            self.assertEqual(text.count("{"), text.count("}"), t)
+
+    def test_header_and_tempo(self):
+        text = e.new_score("piano", 'Say "hi"', "", "c", "major", "4/4", 120, 1)
+        self.assertIn('title = "Say \\"hi\\""', text)
+        self.assertNotIn("composer", text)
+        self.assertIn("\\tempo 4 = 120", text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -182,6 +182,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
     var transposing by remember { mutableStateOf(false) }
+    /** The New score dialog's templates, once asked for (null: the dialog is closed). */
+    var newScoreTemplates by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
     /** Where the files the score \includes are copied to for LilyPond (from the folder the user granted). */
     var includeDirs by remember { mutableStateOf(emptyList<java.io.File>()) }
     /** A render failed for an included file it couldn't find: offer to grant the score's folder. */
@@ -761,6 +763,25 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         )
     }
 
+    newScoreTemplates?.let { templates ->
+        NewScoreDialog(
+            templates = templates,
+            onDismiss = { newScoreTemplates = null },
+            onCreate = { spec ->
+                newScoreTemplates = null
+                scope.launch {
+                    runCatching { tools.newScore(spec) }
+                        .onSuccess { t ->
+                            replaceText(t)
+                            setFile(ScoreFiles.Current(null, null, null))
+                            status = "New score: tap a rest and Enter notes to fill it."
+                        }
+                        .onFailure { status = "Can't make that score: ${it.message}" }
+                }
+            },
+        )
+    }
+
     if (transposing) {
         // The range, else the selected note or chord, else everything.
         val sel = range.ifEmpty { listOfNotNull(selectedOffset) }.filter { it <= text.text.length }
@@ -839,9 +860,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             @Composable
                             fun Item(label: String, enabled: Boolean = true, action: () -> Unit) =
                                 DropdownMenuItem(text = { Text(label) }, enabled = enabled, onClick = { fileMenu = false; action() })
-                            Item("New") {
-                                replaceText(ScoreFiles.NEW_SCORE)
-                                setFile(ScoreFiles.Current(null, null, null))
+                            Item("New…") {
+                                scope.launch { newScoreTemplates = runCatching { tools.templates() }.getOrElse { listOf("melody" to "Melody") } }
                             }
                             Item("Open…") { openLy.launch(LY_TYPES) }
                             Item("Save", enabled = modified || file.uri == null) {
@@ -1150,6 +1170,87 @@ private class Playback private constructor(
         }
     }
 }
+
+/** A new score: template, title and composer, key, time, tempo, number of bars. */
+@Composable
+private fun NewScoreDialog(templates: List<Pair<String, String>>, onDismiss: () -> Unit, onCreate: (LilyTools.NewScore) -> Unit) {
+    var template by remember { mutableStateOf(templates.first().first) }
+    var title by remember { mutableStateOf("") }
+    var composer by remember { mutableStateOf("") }
+    var tonic by remember { mutableStateOf("c") }
+    var minor by remember { mutableStateOf(false) }
+    var time by remember { mutableStateOf("4/4") }
+    var tempo by remember { mutableStateOf("") }
+    var bars by remember { mutableStateOf("8") }
+    @Composable
+    fun Chips(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) =
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for ((value, label) in options) {
+                val pad = PaddingValues(horizontal = 8.dp)
+                if (value == selected) Button(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
+                else OutlinedButton(onClick = { onSelect(value) }, contentPadding = pad) { Text(label) }
+            }
+        }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New score") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for ((id, name) in templates) {
+                    Row(Modifier.fillMaxWidth().clickable { template = id }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = template == id, onClick = { template = id })
+                        Text(name)
+                    }
+                }
+                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = composer, onValueChange = { composer = it }, label = { Text("Composer") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("Key")
+                Chips(KEYS.map { it to keyLabel(it) }, tonic) { tonic = it }
+                Chips(listOf("major" to "major", "minor" to "minor"), if (minor) "minor" else "major") { minor = it == "minor" }
+                Text("Time")
+                Chips(TIMES.map { it to it }, time) { time = it }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = tempo, onValueChange = { tempo = it.filter(Char::isDigit).take(3) },
+                        label = { Text("Tempo ♩=") }, singleLine = true, modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                    OutlinedTextField(
+                        value = bars, onValueChange = { bars = it.filter(Char::isDigit).take(3) },
+                        label = { Text("Bars") }, singleLine = true, modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onCreate(
+                    LilyTools.NewScore(
+                        template, title.trim(), composer.trim(), tonic, minor, time,
+                        tempo.toIntOrNull()?.takeIf { it in 20..400 }, (bars.toIntOrNull() ?: 8).coerceIn(1, 500),
+                    ),
+                )
+            }) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Key tonics for a new score, as LilyPond writes them, from flats to sharps. */
+private val KEYS = listOf("ges", "des", "as", "es", "bes", "f", "c", "g", "d", "a", "e", "b", "fis", "cis")
+
+/** "fis" -> "F♯", "bes" -> "B♭". */
+private fun keyLabel(tonic: String): String {
+    val letter = tonic.first().uppercaseChar()
+    return when {
+        tonic.length == 1 -> "$letter"
+        tonic.endsWith("is") -> "$letter♯"
+        else -> "$letter♭"
+    }
+}
+
+private val TIMES = listOf("4/4", "3/4", "2/4", "2/2", "6/8", "3/8", "9/8", "12/8", "5/4")
 
 /** Transposing by an interval: up or down, from a minor second to an octave. */
 @Composable

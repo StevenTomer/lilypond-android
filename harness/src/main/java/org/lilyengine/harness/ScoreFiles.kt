@@ -76,13 +76,4 @@ object ScoreFiles {
     /** The file name without its extension, for naming exports: "minuet.ly" -> "minuet". */
     fun baseName(name: String?): String = name?.substringBeforeLast('.')?.takeIf { it.isNotBlank() } ?: "score"
 
-    /** What a new score starts as. */
-    val NEW_SCORE = """
-        \version "2.26.0"
-        \header { title = "" }
-        \relative c'' {
-          \key c \major \time 4/4
-          c4 d e f | g1 \bar "|."
-        }
-    """.trimIndent() + "\n"
 }

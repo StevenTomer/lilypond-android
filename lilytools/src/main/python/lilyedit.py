@@ -1561,12 +1561,114 @@ def _music_ends(text):
 
 
 # --------------------------------------------------------------------------
+# New scores from templates
+
+TEMPLATES = {
+    "melody": "Melody (one staff)",
+    "piano": "Piano",
+    "voice-piano": "Voice and piano",
+    "satb": "Choir (SATB, four staves)",
+    "satb2": "Choir on two staves",
+    "lead": "Lead sheet (melody and chords)",
+    "quartet": "String quartet",
+}
+
+
+def _string(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def new_score(template="melody", title="", composer="", tonic="c", mode="major",
+              time="4/4", tempo=None, bars=4):
+    """A new score: the parts of `template` as variables with a shared
+    `global` (key, time, tempo), each `bars` bars of rests to fill in."""
+    n, d = (int(x) for x in time.split("/"))
+    bar_rests = " ".join("r" + x for x in _durations_for(Fraction(n, d)))
+    rests = " |\n  ".join([bar_rests] * max(1, int(bars))) + ' \\bar "|."'
+    skips = " | ".join(" ".join("s" + x for x in _durations_for(Fraction(n, d))) for _ in range(max(1, int(bars))))
+    out = ['\\version "2.26.0"', ""]
+    head = []
+    if title:
+        head.append("  title = " + _string(title))
+    if composer:
+        head.append("  composer = " + _string(composer))
+    if head:
+        out += ["\\header {"] + head + ["}", ""]
+    out += ["global = {", "  \\key %s \\%s" % (tonic, mode), "  \\time %s" % time]
+    if tempo:
+        out.append("  \\tempo 4 = %d" % int(tempo))
+    out += ["}", ""]
+
+    def part(name, octave, clef=None):
+        lines = ["%s = \\relative %s {" % (name, octave), "  \\global"]
+        if clef:
+            lines.append("  \\clef %s" % clef)
+        lines += ["  " + rests, "}", ""]
+        return lines
+
+    def staff(var, instrument=None):
+        w = ' \\with { instrumentName = %s }' % _string(instrument) if instrument else ""
+        return "    \\new Staff%s \\%s" % (w, var)
+
+    if template == "melody":
+        out += part("melody", "c''")
+        body = [staff("melody")]
+    elif template == "piano":
+        out += part("right", "c''") + part("left", "c", "bass")
+        body = ['    \\new PianoStaff \\with { instrumentName = "Piano" } <<',
+                "  " + staff("right"), "  " + staff("left"), "    >>"]
+    elif template == "voice-piano":
+        out += part("melody", "c''") + part("right", "c''") + part("left", "c", "bass")
+        body = [staff("melody", "Voice"),
+                '    \\new PianoStaff \\with { instrumentName = "Piano" } <<',
+                "  " + staff("right"), "  " + staff("left"), "    >>"]
+    elif template == "satb":
+        out += (part("soprano", "c''") + part("alto", "c'") +
+                part("tenor", "c'", '"treble_8"') + part("bass", "c", "bass"))
+        body = ["    \\new ChoirStaff <<", "  " + staff("soprano", "Soprano"), "  " + staff("alto", "Alto"),
+                "  " + staff("tenor", "Tenor"), "  " + staff("bass", "Bass"), "    >>"]
+    elif template == "satb2":
+        out += part("soprano", "c''") + part("alto", "c'") + part("tenor", "c'") + part("bass", "c")
+        body = ["    \\new ChoirStaff <<",
+                '      \\new Staff \\with { instrumentName = \\markup \\center-column { "Soprano" "Alto" } } <<',
+                '        \\new Voice = "soprano" { \\voiceOne \\soprano }',
+                '        \\new Voice = "alto" { \\voiceTwo \\alto }',
+                "      >>",
+                '      \\new Staff \\with { instrumentName = \\markup \\center-column { "Tenor" "Bass" } } <<',
+                "        \\clef bass",
+                '        \\new Voice = "tenor" { \\voiceOne \\tenor }',
+                '        \\new Voice = "bass" { \\voiceTwo \\bass }',
+                "      >>",
+                "    >>"]
+    elif template == "lead":
+        out += part("melody", "c''")
+        out += ["harmonies = \\chordmode {", "  " + skips, "}", ""]
+        body = ["    \\new ChordNames \\harmonies", staff("melody")]
+    elif template == "quartet":
+        out += (part("violinI", "c''") + part("violinII", "c''") +
+                part("viola", "c'", "alto") + part("cello", "c", "bass"))
+        body = ["    \\new StaffGroup <<", "  " + staff("violinI", "Violin I"), "  " + staff("violinII", "Violin II"),
+                "  " + staff("viola", "Viola"), "  " + staff("cello", "Cello"), "    >>"]
+    else:
+        raise ValueError("unknown template " + template)
+    out += ["\\score {", "  <<"] + body + ["  >>", "  \\layout { }", "  \\midi { }", "}", ""]
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------
 # Entry point for Kotlin: one JSON request in, one JSON reply out.
 
 
 def call(request_json):
     req = json.loads(request_json)
     op = req["op"]
+    if op == "templates":
+        return json.dumps({"templates": [{"id": k, "name": v} for k, v in TEMPLATES.items()]})
+    if op == "new_score":
+        try:
+            return json.dumps({"text": new_score(**{k: v for k, v in req.items() if k != "op"})})
+        except Exception as e:
+            return json.dumps({"error": "%s: %s" % (type(e).__name__, e)})
     text = req["text"]
     try:
         if op == "set_pitch":

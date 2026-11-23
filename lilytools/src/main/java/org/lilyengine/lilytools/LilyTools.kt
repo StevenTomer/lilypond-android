@@ -269,6 +269,36 @@ class LilyTools(context: Context) {
             Recorded(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")), result.offsetByCodePoints(0, reply.getInt("end")))
         }
 
+    /** What a new score can start from: id and name. */
+    suspend fun templates(): List<Pair<String, String>> = withContext(dispatcher) {
+        val reply = JSONObject(lilyedit().callAttr("call", JSONObject().put("op", "templates").toString()).toString())
+        val list = reply.getJSONArray("templates")
+        List(list.length()) { list.getJSONObject(it).let { t -> t.getString("id") to t.getString("name") } }
+    }
+
+    /** A new score's settings. [tonic] as LilyPond writes it ("bes", "fis"); [time] e.g. "6/8". */
+    data class NewScore(
+        val template: String,
+        val title: String = "",
+        val composer: String = "",
+        val tonic: String = "c",
+        val minor: Boolean = false,
+        val time: String = "4/4",
+        val tempo: Int? = null,
+        val bars: Int = 4,
+    )
+
+    /** The LilyPond text of a new score: its parts as variables with a shared `global`, bars of rests to fill in. */
+    suspend fun newScore(spec: NewScore): String = withContext(dispatcher) {
+        val request = JSONObject().put("op", "new_score").put("template", spec.template)
+            .put("title", spec.title).put("composer", spec.composer).put("tonic", spec.tonic)
+            .put("mode", if (spec.minor) "minor" else "major").put("time", spec.time)
+            .put("tempo", spec.tempo ?: JSONObject.NULL).put("bars", spec.bars)
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        reply.getString("text")
+    }
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))
