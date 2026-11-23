@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableIntStateOf(1) } // opens on the score
     val tabs = listOf("Test", "Score", "Benchmark", "MIDI")
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         TabRow(selectedTabIndex = tab) {

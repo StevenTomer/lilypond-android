@@ -430,6 +430,29 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.28.0, a keypad instead of rows of buttons** (after looking at how MuseScore,
+  Sibelius and Dorico for iPad, StaffPad, Finale, Harmony Assistant and Denemo handle
+  hundreds of commands):
+  - One catalog of every command (`Command` in `Keypad.kt`): id, name (its tooltip),
+    group, glyph, and when it applies.
+  - A fixed grid of pages (Edit, Notes, Marks, Lines, Score). Buttons that don't apply
+    are dimmed, not removed, so nothing moves.
+    - Columns and rows are set in Keypad settings.
+    - Docks along the bottom when the window is taller than wide and at the side when
+      wider (or always bottom or side). Nothing assumes landscape.
+  - Pages follow along (Notes mode → Notes, a range → Lines). On by default; the pin
+    stops it.
+  - Customizable: Arrange buttons (tap a slot, pick from the searchable catalog), add,
+    rename and remove pages, presets (All buttons, Minimal). Saved between sessions.
+  - Floating windows: any page tears off (⧉) into a window that drags by its title,
+    snaps to the edges, collapses, docks again, and can be see-through. Positions are
+    kept separately for tall and wide screens.
+  - Add…: the whole catalog as tiles, searchable. Replaces the "⋮" menu; the Insert
+    dialog opens at the kind chosen (clef, key…).
+  - Every button has a tooltip: on pen or mouse hover, and on a long press.
+  - Top bar: Undo, Redo, File, Edit | Notes | Lyrics, Play, keypad and source
+    toggles. The LilyPond source is hidden until asked for. The app opens on the score.
+  - More marks are reachable: portato, turn, prall, mordent, bowings, more dynamics.
 - **0.27.0, fixes from the third tablet test:**
   - A tap on the staff now goes where it is tapped, not after the selected note
     (`ScoreLookup.entryPlace`).
