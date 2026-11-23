@@ -1,5 +1,11 @@
 package org.lilyengine.harness
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.material3.Surface
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.Alignment
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
@@ -10,7 +16,6 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.background
@@ -74,10 +79,28 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard) {
-    var tab by rememberSaveable { mutableIntStateOf(1) } // opens on the score
-    val tabs = listOf("Test", "Score", "Benchmark", "MIDI")
-    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-        TabRow(selectedTabIndex = tab) {
+    // The app is the score; the self-test, benchmark and MIDI device screens are
+    // diagnostics, opened from the File menu over it (the score stays as it was).
+    var diagnostics by rememberSaveable { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+        ScoreScreen(engine, keyboard, onDiagnostics = { diagnostics = true })
+        if (diagnostics) {
+            BackHandler { diagnostics = false }
+            Surface(Modifier.fillMaxSize()) { Diagnostics(engine, keyboard, onClose = { diagnostics = false }) }
+        }
+    }
+}
+
+@Composable
+private fun Diagnostics(engine: LilyPondEngine, keyboard: MidiKeyboard, onClose: () -> Unit) {
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val tabs = listOf("Self-test", "Benchmark", "MIDI devices")
+    Column(Modifier.fillMaxSize()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onClose) { Text("← Back to the score") }
+            Text("Diagnostics", fontWeight = FontWeight.Bold)
+        }
+        PrimaryTabRow(selectedTabIndex = tab) {
             tabs.forEachIndexed { i, title ->
                 Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
             }
@@ -85,8 +108,7 @@ private fun Root(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         Box(Modifier.weight(1f)) {
             when (tab) {
                 0 -> Harness(engine)
-                1 -> ScoreScreen(engine, keyboard)
-                2 -> BenchmarkScreen(engine)
+                1 -> BenchmarkScreen(engine)
                 else -> MidiScreen(keyboard)
             }
         }

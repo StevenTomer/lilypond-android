@@ -430,6 +430,19 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.29.0, the keypad holds only notation:**
+  - One set of note values (and the dot) for both modes: in Notes mode they are for
+    new notes, otherwise they change the selected notes. The Edit and Notes pages
+    became one Notes page, and no command is on two default pages.
+  - Cut, Copy, Paste and Delete are in the top bar, by Undo and Redo. (Delete leaves
+    the clipboard alone; Cut replaces it.) Add… is in the top bar too.
+  - Entry settings and recording (Fill, Chord, the piano, tempo, grid, two hands,
+    Record) are in a strip shown only in Notes mode, not on the keypad, and not in
+    Add…, which lists only notation.
+  - The top bar wraps onto a second row on narrow screens instead of scrolling.
+  - The Test, Benchmark and MIDI tabs are gone: File ▸ Diagnostics… opens them over
+    the score, with Back to return.
+  - Keypad layouts saved by 0.28 are replaced by the new default pages once.
 - **0.28.0, a keypad instead of rows of buttons** (after looking at how MuseScore,
   Sibelius and Dorico for iPad, StaffPad, Finale, Harmony Assistant and Denemo handle
   hundreds of commands):

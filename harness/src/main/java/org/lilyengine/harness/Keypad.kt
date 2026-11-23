@@ -120,7 +120,7 @@ data class KeypadConfig(
     val translucent: Boolean = false,
 ) {
     fun toJson(): String = JSONObject()
-        .put("columns", columns).put("rows", rows).put("follow", follow).put("dock", dock).put("translucent", translucent)
+        .put("version", VERSION).put("columns", columns).put("rows", rows).put("follow", follow).put("dock", dock).put("translucent", translucent)
         .put("pages", JSONArray(pages.map { p -> JSONObject().put("id", p.id).put("name", p.name).put("slots", JSONArray(p.slots.map { it ?: JSONObject.NULL })) }))
         .put("floating", JSONArray(floating.map { f ->
             JSONObject().put("page", f.pageId).put("tx", f.tall.x).put("ty", f.tall.y).put("wx", f.wide.x).put("wy", f.wide.y).put("collapsed", f.collapsed)
@@ -132,6 +132,7 @@ data class KeypadConfig(
 
         fun load(context: Context): KeypadConfig = runCatching {
             val o = JSONObject(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("config", null) ?: return KeypadConfig())
+            if (o.optInt("version", 1) < VERSION) return KeypadConfig()
             val pages = o.getJSONArray("pages").let { a ->
                 List(a.length()) { i ->
                     val p = a.getJSONObject(i)
@@ -157,48 +158,48 @@ data class KeypadConfig(
         fun save(context: Context, config: KeypadConfig) =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putString("config", config.toJson()) }
 
+        /** Saved layouts older than this are replaced by the defaults (their commands changed). */
+        const val VERSION = 2
+
         val DEFAULT_PAGES = listOf(
-            KeypadPage("edit", "Edit", listOf(
-                "dur.1", "dur.2", "dur.4", "dur.8", "dur.16",
-                "step.up", "step.down", "acc.sharp", "acc.flat", "acc.natural",
-                "dot", "respell", "delete", "copy", "paste",
-                "cut", "mark.tie", "span.slur", "mark.staccato", "add",
-            )),
+            // Both modes: in Notes mode the values are for new notes, otherwise they change the selection.
             KeypadPage("notes", "Notes", listOf(
-                "entry.1", "entry.2", "entry.4", "entry.8", "entry.16",
-                "entry.32", "entry.dot", "entry.rest", "entry.fill", "entry.chord",
-                "voice.1", "voice.2", "voice.3", "voice.4", "entry.piano",
-                "rec.slower", "rec.faster", "rec.grid", "rec.hands", "rec.record",
+                "dur.1", "dur.2", "dur.4", "dur.8", "dur.16",
+                "dur.32", "dot", "entry.rest", "mark.tie", "respell",
+                "step.up", "step.down", "acc.sharp", "acc.flat", "acc.natural",
+                "voice.1", "voice.2", "voice.3", "voice.4", null,
             )),
             KeypadPage("marks", "Marks", listOf(
                 "mark.staccato", "mark.accent", "mark.tenuto", "mark.marcato", "mark.staccatissimo",
                 "mark.fermata", "mark.trill", "mark.turn", "mark.prall", "mark.mordent",
                 "mark.pp", "mark.p", "mark.mp", "mark.mf", "mark.f",
-                "mark.ff", "mark.sfz", "mark.upbow", "mark.downbow", "add",
+                "mark.ff", "mark.sfz", "mark.upbow", "mark.downbow", "mark.portato",
             )),
             KeypadPage("lines", "Lines", listOf(
-                "span.slur", "mark.slur-start", "mark.slur-end", "mark.tie", "add.text",
-                "span.cresc", "span.decresc", "mark.cresc", "mark.decresc", "mark.hairpin-end",
+                "span.slur", "mark.slur-start", "mark.slur-end", "span.cresc", "span.decresc",
+                "mark.cresc", "mark.decresc", "mark.hairpin-end", "add.text", null,
                 "wrap.triplet", "wrap.tuplet", "wrap.grace", "wrap.8va", "wrap.8vb",
-                "repeat", "ending.first", "ending.next", "bar.final", "bar.double",
+                "repeat", "ending.first", "ending.next", "bar.double", "bar.final",
             )),
             KeypadPage("structure", "Score", listOf(
                 "add.clef", "add.key", "add.time", "add.tempo", "add.bar",
-                "add.text", "add.repeat", "voice.add", "voice.remove", "transpose",
-                "file.new", "score.settings", "view.source", "play", "add",
-                null, null, null, null, "keypad.settings",
+                "add.repeat", "voice.add", "voice.remove", "transpose", null,
+                null, null, null, null, null,
+                null, null, null, null, null,
             )),
         )
 
         /** Fewer buttons: the ones used most. */
         val MINIMAL_PAGES = listOf(
-            KeypadPage("edit", "Edit", listOf(
-                "dur.2", "dur.4", "dur.8", "dot", "step.up", "step.down",
-                "acc.sharp", "acc.flat", "delete", "copy", "paste", "add",
-            )),
             KeypadPage("notes", "Notes", listOf(
-                "entry.2", "entry.4", "entry.8", "entry.dot", "entry.rest", "entry.chord",
-                "voice.1", "voice.2", "entry.fill", "entry.piano", "rec.record", "add",
+                "dur.2", "dur.4", "dur.8", "dot",
+                "step.up", "step.down", "acc.sharp", "acc.flat",
+                "entry.rest", "mark.tie", "voice.1", "voice.2",
+            )),
+            KeypadPage("marks", "Marks", listOf(
+                "mark.staccato", "mark.accent", "mark.tenuto", "mark.fermata",
+                "mark.p", "mark.mf", "mark.f", "span.slur",
+                "span.cresc", "span.decresc", "repeat", "add.text",
             )),
         )
     }

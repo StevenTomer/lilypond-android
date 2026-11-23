@@ -119,7 +119,7 @@ import androidx.compose.runtime.collectAsState
  */
 @OptIn(FlowPreview::class)
 @Composable
-fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
+fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard, onDiagnostics: () -> Unit = {}) {
     val appFiles = LocalContext.current.filesDir
     val draftFile = remember { java.io.File(appFiles, DRAFT_FILE) }
     /** The source being edited: the saved draft if there is one, else the sample. */
@@ -1021,7 +1021,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     // ---- The keypad: every command in one catalog, on pages the user arranges.
     var keypad by remember { mutableStateOf(KeypadConfig.load(context)) }
     fun setKeypad(c: KeypadConfig) { keypad = c; KeypadConfig.save(context, c) }
-    var keypadPage by rememberSaveable { mutableStateOf("edit") }
+    var keypadPage by rememberSaveable { mutableStateOf("notes") }
     var showKeypad by rememberSaveable { mutableStateOf(true) }
     var showSource by rememberSaveable { mutableStateOf(false) }
     var showPiano by rememberSaveable { mutableStateOf(true) }
@@ -1045,7 +1045,6 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             "lyrics" -> { lyricsMode = true; entering = false; lyricAnchor = null }
             else -> { entering = false; lyricsMode = false; lyricAnchor = null }
         }
-        if (mode != "lyrics") follow(mode)
     }
     // A box drawn round notes: the page with what goes over a range.
     LaunchedEffect(range.size >= 2) { if (range.size >= 2 && !entering && !lyricsMode) follow("lines") }
@@ -1077,6 +1076,9 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     fun markSel(what: String) =
         if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Toggle(what)) } else edit { src, off -> tools.toggle(src, off, what) }
 
+    fun deleteSel() =
+        if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) } else edit { src, off -> tools.delete(src, off) }
+
     val commandList: List<Command> = buildList {
         fun c(
             id: String, name: String, group: String, glyph: Glyph,
@@ -1085,23 +1087,20 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         fun label(t: String, size: Int = 18) = Glyph.Label(t, size)
         val hasNote = { selected != null }
 
-        c("undo", "Undo", "General", Glyph.Vector(Glyphs.Undo), { undo.isNotEmpty() }) { undoLast() }
-        c("redo", "Redo", "General", Glyph.Vector(Glyphs.Redo), { undo.canRedo }) { redoLast() }
-        c("play", if (playback != null) "Stop playing" else if (selection.isNotEmpty()) "Play from the selected note" else "Play",
-            "General", label(if (playback != null) "■" else "▶"), { midi != null || playback != null }) { togglePlay() }
-        c("view.source", "Source (show or hide the LilyPond text)", "General", label("{ }", 15), on = { showSource }) { showSource = !showSource }
-        c("add", "Add… — search every command", "General", label("+…", 16)) { catalogOpen = true }
-        c("keypad.settings", "Keypad settings (grid size, docking, pages)", "General", label("⚙")) { keypadSettings = true }
-        c("mode.edit", "Edit mode (change the selected notes)", "Modes", label("✎"), on = { !entering && !lyricsMode }) { setMode("edit") }
-        c("mode.notes", "Note entry mode (tap the staff to add notes)", "Modes", label("♩+", 16), on = { entering }) { setMode("notes") }
-        c("mode.lyrics", "Lyrics mode (type the words for a melody)", "Modes", label("Aa", 15), on = { lyricsMode }) { setMode("lyrics") }
-
+        // One set of note values: in Notes mode they are for the notes to come, otherwise they change the selected ones.
         for (d in listOf("1", "2", "4", "8", "16", "32")) {
-            c("dur.$d", "${DURATION_NAMES[d]} (the selected notes)", "Change note values", Glyph.Note(d), hasNote,
-                { !inRange && selected?.duration?.trimEnd('.') == d }) { durationSel(d) }
+            c("dur.$d", "${DURATION_NAMES[d]} (" + (if (entering) "new notes" else "the selected notes") + ")", "Note values", Glyph.Note(d),
+                { entering || selected != null },
+                { if (entering) entryDuration == d else !inRange && selected?.duration?.trimEnd('.') == d }) {
+                if (entering) entryDuration = d else durationSel(d)
+            }
         }
-        c("dot", "Dot (the selected notes; again to remove it)", "Change note values", label("•"), hasNote,
-            { !inRange && selected?.duration?.endsWith(".") == true }) { dotSel() }
+        c("dot", "Dot (" + (if (entering) "new notes" else "the selected notes; again to remove it") + ")", "Note values", label("•"),
+            { entering || selected != null },
+            { if (entering) entryDot else !inRange && selected?.duration?.endsWith(".") == true }) {
+            if (entering) entryDot = !entryDot else dotSel()
+        }
+        c("entry.rest", "Rest (enters a rest, in Notes mode)", "Note values", label("𝄽", 20), { entering }) { entries.trySend(Entry.Keys(emptyList())) }
         c("step.up", "Up a step", "Pitch", label("▲"), { pitched }) { stepSel(+1) }
         c("step.down", "Down a step", "Pitch", label("▼"), { pitched }) { stepSel(-1) }
         c("acc.sharp", "Sharp", "Pitch", label("♯", 20), { pitched }) { alterSel(1) }
@@ -1111,21 +1110,6 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Respell) } else edit { src, off -> tools.respell(src, off) }
         }
         c("transpose", "Transpose… (the selection, or the whole score)", "Pitch", label("⇅", 20)) { transposing = true }
-        c("delete", "Delete", "Edit", Glyph.Vector(Glyphs.Delete), hasNote) {
-            if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) } else edit { src, off -> tools.delete(src, off) }
-        }
-        c("copy", "Copy", "Edit", Glyph.Vector(Glyphs.Copy), hasNote) { copySelection(cut = false) }
-        c("cut", "Cut", "Edit", Glyph.Vector(Glyphs.Cut), hasNote) { copySelection(cut = true) }
-        c("paste", "Paste after the selected note", "Edit", Glyph.Vector(Glyphs.Paste), { selected != null && clip != null }) { pasteClip() }
-
-        for (d in listOf("1", "2", "4", "8", "16", "32")) {
-            c("entry.$d", "${DURATION_NAMES[d]} (new notes)", "Note entry", Glyph.Note(d), on = { entryDuration == d }) { entryDuration = d }
-        }
-        c("entry.dot", "Dotted (new notes)", "Note entry", Glyph.Note(entryDuration, dotted = true), on = { entryDot }) { entryDot = !entryDot }
-        c("entry.rest", "Enter a rest", "Note entry", label("𝄽", 20), { entering }) { entries.trySend(Entry.Keys(emptyList())) }
-        c("entry.fill", "Fill rests (new notes replace the rests they land on)", "Note entry", label("▭♩", 14), on = { fillRests }) { fillRests = !fillRests }
-        c("entry.chord", "Chord (new notes join the selected note)", "Note entry", label("♩♩", 15), on = { chordMode }) { chordMode = !chordMode }
-        c("entry.piano", "Show or hide the on-screen piano (note entry)", "Note entry", label("🎹", 18), on = { showPiano }) { showPiano = !showPiano }
         for (n in 1..4) {
             c("voice.$n", "Voice $n (new notes go into it, on a staff with several voices)", "Voices", label("$n", 17),
                 { voicesHere.size >= n }, { voicesHere.getOrNull(n - 1)?.let { v -> selected?.sameVoiceAs(v) } == true },
@@ -1135,19 +1119,6 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         c("voice.remove", "Remove this voice", "Voices", label("V−", 15), { selected?.voiceId?.isNotEmpty() == true }) {
             range = emptyList()
             edit { src, off -> tools.removeVoice(src, off) }
-        }
-
-        c("rec.slower", "Record slower (now ♩ = $recordBpm)", "Recording", label("♩−", 15)) { recordBpm = (recordBpm - 5).coerceIn(30, 240) }
-        c("rec.faster", "Record faster (now ♩ = $recordBpm)", "Recording", label("♩+5", 13)) { recordBpm = (recordBpm + 5).coerceIn(30, 240) }
-        c("rec.grid", "Rhythm grid (${if (recordGrid == "16") "sixteenths" else "eighths"}; tap to change)", "Recording", Glyph.Note(recordGrid)) {
-            recordGrid = if (recordGrid == "16") "8" else "16"
-        }
-        c("rec.hands", "Record two hands (the left hand into the staff below)", "Recording", label("2✋", 14), { canTwoHands }, { twoHands }) { twoHands = !twoHands }
-        c("rec.record", if (recorder != null) "Stop recording" else "Record (in real time at ♩ = $recordBpm, after the selected note)", "Recording",
-            label(if (recorder != null) "■" else "●", 20), on = { recorder != null }, color = { Color(0xFFC62828) }) {
-            if (recorder != null) stopRecording()
-            else if (selectedOffset == null) status = "Select the note to record after."
-            else recorder = Recorder(keyboard, recordBpm).also { it.start(scope) }
         }
 
         for ((what, glyph, name) in ARTICULATION_KEYS) {
@@ -1184,23 +1155,11 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         c("add.text", "Text… (dolce, rit., bold, italic)", "Insert", Glyph.Label("Abc", 14, italic = true), hasNote) { inserting = "text" }
         c("add.repeat", "Repeat or ending…", "Insert", label("𝄆", 20), hasNote) { inserting = "repeat" }
 
-        c("file.new", "New score…", "File", label("📄", 17)) {
-            scope.launch { newScoreTemplates = runCatching { tools.templates() }.getOrElse { listOf("melody" to "Melody") } }
-        }
-        c("file.open", "Open…", "File", label("📂", 17)) { openLy.launch(LY_TYPES) }
-        c("file.save", "Save", "File", label("💾", 17)) {
-            val uri = file.uri
-            if (uri != null) saveTo(uri, file.name) else saveAs.launch(file.name ?: "score.ly")
-        }
-        c("file.import", "Import a MIDI or MusicXML file…", "File", label("⤓", 18)) { pickImport.launch(IMPORT_TYPES) }
-        c("score.settings", "Score settings… (title, composer, paper)", "File", label("📝", 17)) {
-            scope.launch { editingSettings = runCatching { tools.settings(text.text) }.getOrElse { LilyTools.ScoreSettings() } }
-        }
     }
     val commands = commandList.associateBy { it.id }
 
     if (catalogOpen) {
-        CommandCatalog("Add…", commandList.filter { it.id != "add" }, allowEmpty = false,
+        CommandCatalog("Add…", commandList, allowEmpty = false,
             onPick = { cmd -> catalogOpen = false; cmd?.run?.invoke() }, onDismiss = { catalogOpen = false })
     }
     arrangeSlot?.let { (pageId, slot) ->
@@ -1230,14 +1189,21 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
             ).coerceAtLeast(30.dp)
         val piano: @Composable () -> Unit = { PianoBar(onKey = { k -> keyboard.tap(k) }) }
         val topBar: @Composable () -> Unit = {
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 2.dp),
+            FlowRow(
+                Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
             ) {
                 // Always at hand, whatever the keypad shows.
                 IconTool(Glyphs.Undo, "Undo", undo.isNotEmpty(), ::undoLast)
                 IconTool(Glyphs.Redo, "Redo", undo.canRedo, ::redoLast)
+                Gap()
+                IconTool(Glyphs.Cut, "Cut (delete, keeping a copy to paste)", selected != null) { copySelection(cut = true) }
+                IconTool(Glyphs.Copy, "Copy", selected != null) { copySelection(cut = false) }
+                IconTool(Glyphs.Paste, "Paste after the selected note", selected != null && clip != null, ::pasteClip)
+                IconTool(Glyphs.Delete, "Delete (the clipboard is left as it is)", selected != null) { deleteSel() }
+                Gap()
                     Box {
                         WithTooltip("File: new, open, save, share, import") { TextButton(onClick = { fileMenu = true }) {
                             Text((file.name ?: "Untitled") + (if (modified) " •" else "") + " ▾", maxLines = 1)
@@ -1278,6 +1244,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             HorizontalDivider()
                             Item("Sample: piano") { replaceText(SCORE_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
                             Item("Sample: 15-page piece") { replaceText(LONG_SAMPLE); setFile(ScoreFiles.Current(null, null, null)) }
+                            HorizontalDivider()
+                            Item("Diagnostics… (self-test, benchmark, MIDI devices)") { onDiagnostics() }
                         }
                     }
                 Gap()
@@ -1289,6 +1257,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     val on = when (mode) { "notes" -> entering; "lyrics" -> lyricsMode; else -> !entering && !lyricsMode }
                     TextTool(label, tip, selected = on, fontSize = 14) { setMode(mode) }
                 }
+                TextTool("+…", "Add… (search all the notation: marks, clefs, repeats…)", fontSize = 15) { catalogOpen = true }
                 Gap()
                 error?.let { e -> TextTool("⚠ Error", "Go to the error in the source", fontSize = 14) { jumpTo(e) } }
                 Tool(onClick = ::togglePlay, enabled = midi != null || playback != null,
@@ -1300,6 +1269,37 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 }
                 TextTool("⌨", "Show or hide the keypad", selected = showKeypad) { showKeypad = !showKeypad }
                 TextTool("{ }", "Source (show or hide the LilyPond text)", selected = showSource, fontSize = 15) { showSource = !showSource }
+            }
+        }
+        val entryStrip: @Composable () -> Unit = {
+            FlowRow(
+                Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 6.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextTool("Fill", "Fill rests: new notes replace the rests they land on", selected = fillRests, fontSize = 14) { fillRests = !fillRests }
+                TextTool("Chord", "Chord: new notes join the selected note", selected = chordMode, fontSize = 14) { chordMode = !chordMode }
+                TextTool("🎹", "Show or hide the on-screen piano", selected = showPiano, fontSize = 17) { showPiano = !showPiano }
+                Gap()
+                // Real-time recording from a MIDI keyboard.
+                if (recorder == null) {
+                    TextTool("−", "Record slower") { recordBpm = (recordBpm - 5).coerceIn(30, 240) }
+                    WithTooltip("Recording tempo") { Text("♩=$recordBpm", fontSize = 14.sp, modifier = Modifier.padding(horizontal = 2.dp)) }
+                    TextTool("+", "Record faster") { recordBpm = (recordBpm + 5).coerceIn(30, 240) }
+                    Tool(onClick = { recordGrid = if (recordGrid == "16") "8" else "16" },
+                        description = "Rhythm grid for recording: " + (if (recordGrid == "16") "sixteenths" else "eighths") + " (tap to change)") { c ->
+                        Row(verticalAlignment = Alignment.CenterVertically) { Text("≈", color = c, fontSize = 14.sp); DurationGlyph(recordGrid, c, size = 22.dp) }
+                    }
+                    if (canTwoHands) TextTool("2 hands", "Record two hands: the left hand goes into the staff below", selected = twoHands, fontSize = 14) { twoHands = !twoHands }
+                }
+                Tool(onClick = {
+                    if (recorder != null) stopRecording()
+                    else if (selectedOffset == null) status = "Select the note to record after."
+                    else recorder = Recorder(keyboard, recordBpm).also { it.start(scope) }
+                }, selected = recorder != null,
+                    description = if (recorder != null) "Stop recording" else "Record from a MIDI keyboard in real time, after the selected note",
+                    fill = Color(0xFFC62828)) { c -> Text(if (recorder != null) "■ Stop" else "● Rec", color = c, fontSize = 15.sp) }
             }
         }
         val infoRows: @Composable () -> Unit = {
@@ -1430,6 +1430,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         }
         Column(Modifier.fillMaxSize()) {
             topBar()
+            if (entering) entryStrip()
             infoRows()
             if (side) {
                 Row(Modifier.weight(1f).fillMaxWidth()) {
