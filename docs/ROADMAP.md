@@ -418,6 +418,18 @@ This plan covers the pieces needed before the editor and the editor phases after
     repeat engrave cleanly, with an extra key signature and clef, and the notes as
     before).
 
+- **0.26.0, tuplets, grace notes, octave lines:**
+  - Insert… with a range selected also offers:
+    - tuplets: `\tuplet 3/2 { … }`, plus duplets, quintuplets and sextuplets;
+    - grace notes: `\acciaccatura`, `\appoggiatura`, `\grace`;
+    - octave lines: `\ottava #1` … `\ottava #0`, also 8vb and 15ma.
+  - All three are `lilyedit.wrap`. It writes out the first wrapped item's duration
+    and the duration of the item after, since grace notes would otherwise pass
+    theirs on, and keeps the pitches.
+  - Tests: 3 Python tests, plus an instrumented test: a triplet that takes one beat
+    (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
+    acciaccatura, all engraved with no warnings.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

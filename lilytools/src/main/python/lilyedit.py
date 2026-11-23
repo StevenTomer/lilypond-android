@@ -1874,6 +1874,30 @@ def add_text(text, pos, words, above=True):
     return text[:end] + ("^" if above else "_") + _string(words) + text[end:]
 
 
+def wrap(text, positions, before_text, after_text=""):
+    """Puts `before_text` … `after_text` around the items at `positions` (one
+    stretch of one voice): "\\tuplet 3/2 {" … "}", "\\grace {" … "}",
+    "\\ottava #1" … "\\ottava #0". The item after keeps its duration (grace
+    notes would otherwise pass theirs on), and every note sounds as before."""
+    items = _items(text)
+    ks = sorted({_item_index(text, items, p) for p in positions})
+    start = _item_start(text, items[ks[0]][0])
+    end = _item_end(text, items[ks[-1]][0])
+    if not _same_sequence(text, start, end):
+        raise ValueError("select notes in one voice")
+    before = notes(text)
+    nxt = items[ks[-1] + 1] if ks[-1] + 1 < len(items) else None
+    if nxt is not None and nxt[1] is None:
+        text = text[:nxt[0].insert_pos] + nxt[2] + text[nxt[0].insert_pos:]
+    first = items[ks[0]]
+    inner = text[start:end]
+    if first[1] is None:  # inside braces, the first item says its own duration
+        k = first[0].insert_pos - start
+        inner = inner[:k] + first[2] + inner[k:]
+    text = text[:start] + before_text + " " + inner + (" " + after_text if after_text else "") + text[end:]
+    return _fix_octaves(text, [n.key() for n in before])
+
+
 def repeat(text, positions, times=2):
     """Puts the items at `positions` (one stretch of one voice) in
     \\repeat volta `times` { … }."""
@@ -1987,6 +2011,8 @@ def call(request_json):
             out = change(text, req["pos"], req["kind"], req["written"], req.get("after", False))
         elif op == "add_text":
             out = add_text(text, req["pos"], req["words"], req.get("above", True))
+        elif op == "wrap":
+            out = wrap(text, req["positions"], req["before"], req.get("after", ""))
         elif op == "repeat":
             out = repeat(text, req["positions"], req.get("times", 2))
         elif op == "marks":

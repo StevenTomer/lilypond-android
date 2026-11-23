@@ -332,6 +332,25 @@ class LilyToolsTest {
     }
 
     @Test
+    fun tripletGraceAndOttava() = runBlocking {
+        // A full 4/4 bar once d e f are a triplet (and once d is a grace note).
+        val src = "\\version \"2.26.0\"\n\\relative c'' { c4 d8 e f g4 a | b1 }"
+        var text = tools.wrap(src, listOf(src.indexOf("d8"), src.indexOf("f g")), "\\tuplet 3/2 {", "}").applyTo(src)
+        text = tools.wrap(text, listOf(text.indexOf("b1")), "\\ottava #1", "\\ottava #0").applyTo(text)
+        val r = engine.render(text)
+        assertTrue(r.log, r.success)
+        assertTrue(r.log, r.diagnostics.isEmpty())
+        // The triplet takes one beat: g starts on beat 3 (1/2), not at 5/8.
+        val g = r.scoreMap!!.grobs.single { it.type == "NoteHead" && it.pitch?.notename == 4 }
+        assertEquals(0.5, g.momentValue!!, 1e-9)
+        assertEquals(heads(src), heads(text)) // same pitches (the 8va line only changes how b is printed)
+
+        val grace = tools.wrap(src, listOf(src.indexOf("d8")), "\\acciaccatura {", "}").applyTo(src)
+        val rg = engine.render(grace)
+        assertTrue(rg.log, rg.success && rg.diagnostics.isEmpty())
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

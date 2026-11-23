@@ -885,6 +885,7 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     }
                     is Insertion.Words -> edit(offsets.min()) { src, off -> tools.addText(src, off, what.words, what.above) }
                     is Insertion.Repeat -> edit(offsets.min()) { src, _ -> tools.repeat(src, offsets, what.times) }
+                    is Insertion.Wrap -> edit(offsets.min()) { src, _ -> tools.wrap(src, offsets, what.before, what.after) }
                 }
                 range = emptyList()
             },
@@ -1374,6 +1375,8 @@ private sealed interface Insertion {
     data class Change(val kind: String, val written: String, val after: Boolean = false) : Insertion
     data class Words(val words: String, val above: Boolean) : Insertion
     data class Repeat(val times: Int) : Insertion
+    /** [before] … [after] around the selected notes: tuplets, grace notes, octave lines. */
+    data class Wrap(val before: String, val after: String) : Insertion
 }
 
 /** Clef, key, time, tempo and bar line changes, text, and repeats, at the selected note. */
@@ -1391,6 +1394,9 @@ private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (I
     var words by remember { mutableStateOf("") }
     var above by remember { mutableStateOf(true) }
     var times by remember { mutableStateOf("2") }
+    var tuplet by remember { mutableStateOf("3/2") }
+    var grace by remember { mutableStateOf("acciaccatura") }
+    var ottava by remember { mutableStateOf("1") }
     @Composable
     fun Chips(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) =
         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1407,7 +1413,7 @@ private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (I
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chips(
                     listOf("clef" to "Clef", "key" to "Key", "time" to "Time", "tempo" to "Tempo", "bar" to "Bar line", "text" to "Text") +
-                        if (canRepeat) listOf("repeat" to "Repeat") else emptyList(),
+                        if (canRepeat) listOf("repeat" to "Repeat", "tuplet" to "Tuplet", "grace" to "Grace notes", "ottava" to "8va line") else emptyList(),
                     what,
                 ) { what = it }
                 when (what) {
@@ -1436,6 +1442,15 @@ private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (I
                         Text("Repeats the selected notes (one voice), with repeat signs.", fontSize = 13.sp)
                         Chips(listOf("2", "3", "4").map { it to "$it times" }, times) { times = it }
                     }
+                    "tuplet" -> {
+                        Text("Makes the selected notes a tuplet: enter them with their written values first (three eighths for an eighth-note triplet).", fontSize = 13.sp)
+                        Chips(listOf("3/2" to "triplet", "2/3" to "duplet", "5/4" to "quintuplet", "6/4" to "sextuplet"), tuplet) { tuplet = it }
+                    }
+                    "grace" -> {
+                        Text("Makes the selected notes grace notes before the next one.", fontSize = 13.sp)
+                        Chips(listOf("acciaccatura" to "slashed", "appoggiatura" to "appoggiatura", "grace" to "plain"), grace) { grace = it }
+                    }
+                    "ottava" -> Chips(listOf("1" to "8va (higher)", "-1" to "8vb (lower)", "2" to "15ma"), ottava) { ottava = it }
                 }
             }
         },
@@ -1453,6 +1468,9 @@ private fun InsertDialog(canRepeat: Boolean, onDismiss: () -> Unit, onInsert: (I
                     "bar" -> Insertion.Change("bar", "\\bar \"$bar\"", after = barAfter)
                     "text" -> words.trim().takeIf { it.isNotEmpty() }?.let { Insertion.Words(it, above) }
                     "repeat" -> Insertion.Repeat(times.toInt())
+                    "tuplet" -> Insertion.Wrap("\\tuplet $tuplet {", "}")
+                    "grace" -> Insertion.Wrap("\\$grace {", "}")
+                    "ottava" -> Insertion.Wrap("\\ottava #$ottava", "\\ottava #0")
                     else -> null
                 }
                 if (insertion != null) onInsert(insertion) else onDismiss()

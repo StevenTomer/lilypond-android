@@ -378,6 +378,17 @@ class LilyTools(context: Context) {
         JSONObject().put("op", "add_text").put("pos", text.codePointCount(0, offset)).put("words", words).put("above", above),
     )
 
+    /**
+     * Puts [before] … [after] around the items at [offsets] (one stretch of one
+     * voice): "\\tuplet 3/2 {" … "}", "\\acciaccatura {" … "}", "\\ottava #1" …
+     * "\\ottava #0". Durations and pitches of the music around stay as they were.
+     */
+    suspend fun wrap(text: String, offsets: List<Int>, before: String, after: String = ""): TextEdit = call(
+        text,
+        JSONObject().put("op", "wrap").put("before", before).put("after", after)
+            .put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) })),
+    )
+
     /** Puts the items at [offsets] (one stretch of one voice) in \\repeat volta [times] { … }. */
     suspend fun repeat(text: String, offsets: List<Int>, times: Int = 2): TextEdit = call(
         text,

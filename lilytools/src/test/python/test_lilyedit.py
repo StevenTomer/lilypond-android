@@ -725,5 +725,28 @@ class Changes(unittest.TestCase):
         self.assertEqual(absolute(out), absolute(self.SRC))
 
 
+
+class Wraps(unittest.TestCase):
+    SRC = "\\relative c'' { c4 d8 e f g a4 | b1 }"
+
+    def at(self, *tokens):
+        return [self.SRC.index(t) for t in tokens]
+
+    def test_triplet(self):
+        out = e.wrap(self.SRC, self.at("d8", "f g"), "\\tuplet 3/2 {", "}")
+        self.assertIn("c4 \\tuplet 3/2 { d8 e f } g8 a4", out)
+        self.assertEqual(absolute(out), absolute(self.SRC))
+
+    def test_grace_leaves_the_next_duration(self):
+        src = "\\relative c'' { c4 d16 e4 f }"
+        out = e.wrap(src, [src.index("d16")], "\\acciaccatura {", "}")
+        self.assertEqual(out, "\\relative c'' { c4 \\acciaccatura { d16 } e4 f }")
+
+    def test_ottava(self):
+        out = e.wrap(self.SRC, self.at("a4", "b1"), "\\ottava #1", "\\ottava #0")
+        self.assertIn("g \\ottava #1 a4 | b1 \\ottava #0 }", out)
+        self.assertEqual(absolute(out), absolute(self.SRC))
+
+
 if __name__ == "__main__":
     unittest.main()
