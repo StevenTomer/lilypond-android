@@ -336,6 +336,30 @@ class LilyTools(context: Context) {
         ),
     )
 
+    /** Copied music: the fragment as written, and its notes' absolute pitches (step, alteration in whole tones, octave). */
+    data class Clip(val fragment: String, val pitches: List<Triple<Int, Double, Int>>)
+
+    /** Copies the items at [offsets] (one stretch of one voice). */
+    suspend fun copy(text: String, offsets: List<Int>): Clip = withContext(dispatcher) {
+        val request = JSONObject().put("op", "copy").put("text", text)
+            .put("positions", org.json.JSONArray(offsets.map { text.codePointCount(0, it) }))
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val p = reply.getJSONArray("pitches")
+        Clip(reply.getString("fragment"), List(p.length()) { i -> p.getJSONArray(i).let { Triple(it.getInt(0), it.getDouble(1), it.getInt(2)) } })
+    }
+
+    /** Pastes [clip] after the item at [offset], every note at its copied pitch (\relative or not). */
+    suspend fun paste(text: String, offset: Int, clip: Clip): Recorded = withContext(dispatcher) {
+        val request = JSONObject().put("op", "paste").put("text", text).put("pos", text.codePointCount(0, offset))
+            .put("fragment", clip.fragment)
+            .put("pitches", org.json.JSONArray(clip.pitches.map { org.json.JSONArray(listOf(it.first, it.second, it.third)) }))
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val result = reply.getString("text")
+        Recorded(TextEdit.between(text, result), result.offsetByCodePoints(0, reply.getInt("start")), result.offsetByCodePoints(0, reply.getInt("end")))
+    }
+
     /** The marks (as [toggle] names them) on the note, chord or rest at [offset]. */
     suspend fun marks(text: String, offset: Int): Set<String> = withContext(dispatcher) {
         val request = JSONObject().put("op", "marks").put("text", text).put("pos", text.codePointCount(0, offset))

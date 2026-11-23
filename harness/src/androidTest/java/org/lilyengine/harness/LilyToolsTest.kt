@@ -300,6 +300,19 @@ class LilyToolsTest {
     }
 
     @Test
+    fun copyVoiceTwoAndPasteAtTheEnd() = runBlocking {
+        // Voice 2's bar (c' g', written "c,2 g'") after the last note of the melody's own voice.
+        val clip = tools.copy(POLY_SAMPLE, listOf(POLY_SAMPLE.indexOf("c,2"), POLY_SAMPLE.indexOf("g' }")))
+        assertEquals("c,2 g'", clip.fragment)
+        val last = POLY_SAMPLE.lastIndexOf("g |")
+        val r = tools.paste(POLY_SAMPLE, last, clip)
+        val text = r.edit.applyTo(POLY_SAMPLE)
+        val pasted = heads(text)[""]!!.takeLast(2)
+        assertEquals(listOf("c'", "g'"), pasted) // as copied, though written after a different note
+        assertEquals(heads(POLY_SAMPLE)["2"], heads(text)["2"])
+    }
+
+    @Test
     fun durationAndDelete() = runBlocking {
         val src = "\\version \"2.26.0\"\n\\relative { c''4 d e f | g1 }\n"
         val d = tools.setDuration(src, src.indexOf("d e"), "8").applyTo(src)

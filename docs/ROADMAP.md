@@ -384,6 +384,25 @@ This plan covers the pieces needed before the editor and the editor phases after
   - Tests: 2 Python tests, and an instrumented two-hand recording into the piano
     template, checked staff by staff in LilyPond's engraving.
 
+- **0.24.0, redo, score settings, copy and paste:**
+  - Redo: the undo history keeps what was undone until the next edit, and Redo sits
+    next to Undo in both bars.
+  - File ▸ Score settings: title, subtitle, composer, arranger, lyricist and
+    copyright (in the top-level `\header`; a score's own header is left alone),
+    paper size and orientation (`#(set-default-paper-size "letterlandscape")`, the
+    2.26 form that really turns the page), and staff size
+    (`#(set-global-staff-size 18)`). Implemented in `lilyedit.settings` and
+    `set_settings`.
+  - Copy, Cut and Paste in the edit bar. Copy takes the selected stretch of one voice
+    with its first duration written out and its notes' absolute pitches
+    (`lilyedit.copy`). Paste inserts it after the selected note anywhere, with
+    octave marks corrected so every note sounds as copied, in `\relative` or
+    absolute music (`lilyedit.paste`). The fragment also goes on the system
+    clipboard.
+  - Tests: 6 Python tests, plus instrumented tests: settings turning the page to
+    US Letter landscape in the PDF, and voice 2's bar pasted after the melody,
+    checked in LilyPond's engraving.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

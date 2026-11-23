@@ -182,6 +182,8 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var exportPdf by remember { mutableStateOf<java.io.File?>(null) }
     var fileMenu by remember { mutableStateOf(false) }
     var transposing by remember { mutableStateOf(false) }
+    /** Music copied with Copy or Cut, for Paste. */
+    var clip by remember { mutableStateOf<LilyTools.Clip?>(null) }
     /** The score's settings while the Score settings dialog is open. */
     var editingSettings by remember { mutableStateOf<LilyTools.ScoreSettings?>(null) }
     /** The New score dialog's templates, once asked for (null: the dialog is closed). */
@@ -733,6 +735,49 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
         if (playback === p) { playback = null; cursor = emptyList() }
     }
 
+    /** Copies the range or the selected item; with [cut], removes it too. */
+    fun copySelection(cut: Boolean) {
+        val offsets = range.ifEmpty { listOfNotNull(selectedOffset) }
+        if (offsets.isEmpty() || text.text != renderedText) return
+        scope.launch {
+            runCatching { tools.copy(text.text, offsets) }
+                .onSuccess { c ->
+                    clip = c
+                    (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("LilyPond", c.fragment))
+                    status = (if (cut) "Cut " else "Copied ") + c.fragment.take(40) + if (c.fragment.length > 40) "…" else ""
+                    if (cut) {
+                        if (offsets.size >= 2) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) }
+                        else edit { src, off -> tools.delete(src, off) }
+                    }
+                }
+                .onFailure { status = "Can't copy that: ${it.message}" }
+        }
+    }
+
+    /** Pastes the copied music after the selected item. */
+    fun pasteClip() {
+        val c = clip ?: return
+        val at = selectedOffset ?: return
+        if (busy || text.text != renderedText) return
+        busy = true
+        scope.launch {
+            try {
+                val before = text.text
+                val r = tools.paste(before, at, c)
+                undo.addLast(before)
+                val after = r.edit.applyTo(before)
+                selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
+                range = emptyList(); selectedOffset = null
+                text = TextFieldValue(after, TextRange(r.start, r.end))
+            } catch (ex: LilyTools.EditException) {
+                status = "Can't paste here: ${ex.message}"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     fun undoLast() {
         val previous = undo.undo(text.text) ?: return
         range = emptyList()
@@ -1091,6 +1136,10 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                             else edit { src, off -> tools.respell(src, off) }
                         },
                         onTranspose = { transposing = true },
+                        onCopy = { copySelection(cut = false) },
+                        onCut = { copySelection(cut = true) },
+                        canPaste = clip != null,
+                        onPaste = ::pasteClip,
                         onAddVoice = ::addVoice,
                         inVoice = selected?.voiceId?.isNotEmpty() == true,
                         onRemoveVoice = {
@@ -1844,6 +1893,10 @@ private fun EditBar(
     onDot: () -> Unit,
     onDelete: () -> Unit,
     onTranspose: () -> Unit,
+    onCopy: () -> Unit,
+    onCut: () -> Unit,
+    canPaste: Boolean,
+    onPaste: () -> Unit,
     onAddVoice: () -> Unit,
     /** The selection is in one of several voices, so its voice can be removed. */
     inVoice: Boolean,
@@ -1868,6 +1921,9 @@ private fun EditBar(
         for (d in listOf("1", "2", "4", "8", "16")) B(d, enabled) { onDuration(d) }
         B("Dot", enabled, onDot)
         B("Delete", enabled, onDelete)
+        B("Copy", enabled, onCopy)
+        B("Cut", enabled, onCut)
+        B("Paste", enabled && canPaste, onPaste)
         B("Transpose…", true, onTranspose)
         B("Add voice", enabled, onAddVoice)
         B("Remove voice", enabled && inVoice, onRemoveVoice)

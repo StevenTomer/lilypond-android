@@ -676,5 +676,27 @@ class Settings(unittest.TestCase):
                          '\\version "2.26.0"\n\\header {\n  title = "New"\n}\n{ c4 }')
 
 
+
+class CopyPaste(unittest.TestCase):
+    SRC = "\\relative c'' { c4 d e8 f g4 | a1 }\nlower = { c4 d e f }"
+
+    def test_copy_writes_out_the_first_duration(self):
+        fragment, pitches = e.copy(self.SRC, [self.SRC.index("d e8"), self.SRC.index("f g4")])
+        self.assertEqual(fragment, "d4 e8 f")
+        self.assertEqual(pitches, [(1, 0, 2), (2, 0, 2), (3, 0, 2)])
+
+    def test_paste_into_relative_and_absolute_keeps_the_pitches(self):
+        fragment, pitches = e.copy(self.SRC, [self.SRC.index("d e8"), self.SRC.index("f g4")])
+        out, a, b = e.paste(self.SRC, self.SRC.index("a1"), fragment, pitches)
+        self.assertEqual(out[a:b], "d,4 e8 f")
+        out, a, b = e.paste(self.SRC, self.SRC.index("f }"), fragment, pitches)
+        self.assertEqual(out[a:b], "d''4 e''8 f''")
+
+    def test_across_voices_is_refused(self):
+        src = "<< { c'4 d' } \\\\ { e2 } >>"
+        with self.assertRaises(ValueError):
+            e.copy(src, [src.index("d'"), src.index("e2")])
+
+
 if __name__ == "__main__":
     unittest.main()

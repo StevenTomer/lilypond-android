@@ -1772,6 +1772,55 @@ def _after_version(text):
 
 
 # --------------------------------------------------------------------------
+# Copy and paste of music
+
+def copy(text, positions):
+    """The music of the items at `positions` (one stretch of one voice), to
+    paste elsewhere: (fragment as written, with its first duration written
+    out, and the absolute pitches of its notes)."""
+    items = _items(text)
+    ks = sorted({_item_index(text, items, p) for p in positions})
+    a, b = ks[0], ks[-1]
+    start = _item_start(text, items[a][0])
+    end = _item_end(text, items[b][0])
+    if not _same_sequence(text, start, end):
+        raise ValueError("copy notes from one voice")
+    fragment = text[start:end]
+    first, written, effective = items[a]
+    if written is None:
+        k = first.insert_pos - start
+        fragment = fragment[:k] + effective + fragment[k:]
+    pitches = [n.key() for n in notes(text) if start <= n.pos < end]
+    return fragment, pitches
+
+
+def paste(text, pos, fragment, pitches, after=True):
+    """Inserts copied music after the item at `pos` (or at `pos`), each note
+    sounding at its copied pitch whatever the octave marks around it
+    (\\relative or not). Returns (text, start, end of the pasted music)."""
+    items_ = _items(text)
+    before = notes(text)
+    at = _item_end(text, items_[_item_index(text, items_, pos)][0]) if after else pos
+    following = [(it, w, eff) for it, w, eff in items_ if it.pos >= at]
+    if following and following[0][1] is None:  # the next item keeps its duration
+        nxt = following[0][0]
+        text = text[:nxt.insert_pos] + following[0][2] + text[nxt.insert_pos:]
+    pre = "" if at == 0 or text[at - 1].isspace() else " "
+    post = "" if at >= len(text) or text[at].isspace() else " "
+    text = text[:at] + pre + fragment + post + text[at:]
+    desired = ([n.key() for n in before if n.pos < at] + [tuple(p) for p in pitches]
+               + [n.key() for n in before if n.pos >= at])
+    text = _fix_octaves(text, desired)
+    begin = at + len(pre)
+    # the end: as far as the fragment's length moved by octave fixes is hard to
+    # know, so count its items instead
+    count = len(_items("{ " + fragment + " }"))
+    after_items = _items(text)
+    k = next(i for i, (it, _, _) in enumerate(after_items) if _item_start(text, it) >= begin)
+    return text, begin, _item_end(text, after_items[k + count - 1][0])
+
+
+# --------------------------------------------------------------------------
 # Entry point for Kotlin: one JSON request in, one JSON reply out.
 
 
@@ -1858,6 +1907,14 @@ def call(request_json):
             return json.dumps({"settings": settings(text)})
         elif op == "set_settings":
             out = set_settings(text, req["values"])
+        elif op == "copy":
+            fragment, pitches = copy(text, req["positions"])
+            return json.dumps({"fragment": fragment, "pitches": [[n, float(a), o] for n, a, o in pitches]})
+        elif op == "paste":
+            out, start, end = paste(text, req["pos"], req["fragment"],
+                                    [(n, Fraction(a).limit_denominator(4), o) for n, a, o in req["pitches"]],
+                                    req.get("after", True))
+            return json.dumps({"text": out, "start": start, "end": end})
         elif op == "marks":
             return json.dumps({"marks": marks(text, req["pos"])})
         elif op == "rel2abs":
