@@ -319,8 +319,6 @@ This plan covers the pieces needed before the editor and the editor phases after
     packages keep their `org.lilyengine` names, which are internal). It has an
     adaptive icon (an eighth note), and other MIDI apps see its device as
     "AndroLily". Downloads are named `androlily-<version>-arm64.apk`.
-  - Since the id changed, it installs beside the old "LilyPond Test" instead of over
-    it: save the score to a file first, then uninstall the test app.
   - Also in this version: syntax colours in the source editor (`LilyHighlight`), and
     a Transpose dialog for the selection or the whole score. Part of a `\relative`
     passage is transposed with the music after it kept sounding the same.
