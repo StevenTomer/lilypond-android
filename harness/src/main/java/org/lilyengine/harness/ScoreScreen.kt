@@ -174,7 +174,8 @@ fun ScoreScreen(
     val canSend by keyboard.canSend.collectAsState()
     val appsListening by keyboard.appsListening.collectAsState()
     val sounds = listOfNotNull(Sound.TABLET, Sound.KEYBOARD.takeIf { canSend }, Sound.APPS.takeIf { appsListening > 0 })
-    val sound = soundChoice?.takeIf { it in sounds } ?: if (canSend) Sound.KEYBOARD else Sound.TABLET
+    // The tablet plays unless another output is chosen (a connected keyboard is offered, not assumed).
+    val sound = soundChoice?.takeIf { it in sounds } ?: Sound.TABLET
     val context = LocalContext.current
     val tools = remember { LilyTools(context) }
     /** Source offset of the selected note or rest; the selection follows it across re-renders. */
