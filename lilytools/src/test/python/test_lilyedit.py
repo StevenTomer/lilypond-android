@@ -605,5 +605,33 @@ class LyricsTo(unittest.TestCase):
         self.assertIn("melodyLyrics = \\lyricmode { }", out)
 
 
+
+class Recording(unittest.TestCase):
+    SRC = "\\relative c'' { \\key g \\major \\time 4/4 g4 | d1 }"
+
+    def test_quantized_spelled_with_chords_and_rests(self):
+        played = [(0.03, 0.9, 72), (1.02, 1.8, 74), (1.97, 2.95, 76),
+                  (3.0, 5.1, 67), (3.02, 5.0, 71), (6.0, 6.9, 66)]
+        out, a, b = e.record(self.SRC, self.SRC.index("g4"), played, "1/4")
+        self.assertEqual(out[a:b], "c4 d4 e4 <g, b>2 r4 fis4")
+        # the d1 after sounds as before
+        self.assertEqual(absolute(out)[-1], absolute(self.SRC)[-1])
+
+    def test_ties_across_the_bar_line(self):
+        src = "{ \\time 3/4 c'4 }"
+        out, a, b = e.record(src, src.index("c"), [(1.0, 3.0, 64), (3.0, 4.0, 67)], "1/4")
+        self.assertEqual(out[a:b], "r4 e'4~ e'4 g'4")
+
+    def test_coarser_grid(self):
+        src = "{ c'4 }"
+        out, a, b = e.record(src, 2, [(0.0, 0.4, 62), (0.55, 1.0, 64)], "1/4", grid="8")
+        self.assertEqual(out[a:b], "d'8 e'8")
+
+    def test_time_signature_in_effect(self):
+        src = "{ \\time 6/8 c4 \\time 2/4 d }"
+        self.assertEqual(e.time_at(src, src.index("d }")), Fraction(1, 2))
+        self.assertEqual(e.time_at("{ c4 }", 3), Fraction(1))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -144,6 +144,34 @@ class UsbKeyboardTest {
     }
 
     @Test
+    fun recordInRealTime() = runBlocking {
+        val v = service()
+        val recorder = Recorder(keyboard, bpm = 240) // a beat is 250 ms
+        val main = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main + kotlinx.coroutines.SupervisorJob())
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { recorder.start(main) }
+        val beat = 250L
+        val t0 = System.currentTimeMillis() + 4 * beat // after the count-in
+        fun at(beats: Double) { val wait = t0 + (beats * beat).toLong() - System.currentTimeMillis(); if (wait > 0) Thread.sleep(wait) }
+        // c' d' e' as quarter notes (released a little early), then <g' b'> for two beats.
+        for ((i, key) in listOf(60, 62, 64).withIndex()) {
+            at(i.toDouble()); v.play(0x90, key, 90)
+            at(i + 0.8); v.play(0x80, key, 0)
+        }
+        at(3.0); v.play(0x90, 67, 90, 71, 90)
+        at(5.0); v.play(0x80, 67, 0, 71, 0)
+        Thread.sleep(300)
+        val played = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { recorder.stop() }
+        main.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        Log.i(TAG, "played: $played")
+        assertEquals(listOf(60, 62, 64, 67, 71), played.map { it.key }.sorted())
+
+        val src = "{ \\time 4/4 c'4 }"
+        val r = org.lilyengine.lilytools.LilyTools(context).record(src, src.indexOf("c'4"), played, 0.25)
+        val music = r.edit.applyTo(src).let { it.substring(r.start, r.end) }
+        assertEquals("c'4 d'4 e'4 <g' b'>2", music)
+    }
+
+    @Test
     fun unplugAndReplug() {
         TestKeyboardService.plugIn(context, false)
         // Gone from the list too (a late re-listing can show it once more first).

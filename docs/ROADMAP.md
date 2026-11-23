@@ -343,6 +343,31 @@ This plan covers the pieces needed before the editor and the editor phases after
     2, checked against LilyPond's engraving with no voice warnings), and the host
     LilyPond compiling the `\lyricsto` and named-voice outputs cleanly.
 
+- **0.22.0, voices, includes, recording:**
+  - Voice switcher: in Enter notes, when the selected note's staff has several
+    voices at its moment, a button per voice (in its colour) moves the entry point to
+    that voice's note sounding then (`ScoreLookup.voicesAt`, in `\\` order).
+  - `\include` for scores opened with the file picker. A render that fails on an
+    included file offers "Choose its folder"; once granted, the included files (and
+    theirs) are copied into a working folder before each render, and LilyPond is
+    given that folder with `-I` (`IncludeFolder`). Android won't grant Downloads
+    itself, so the score needs a folder of its own.
+  - Real-time recording (`Recorder`, `lilyedit.record`):
+    - In Enter notes, Record counts in one bar, then takes down what is played while
+      the metronome clicks: on the keyboard (woodblock, channel 10) if connected,
+      else as a beep.
+    - Stop quantizes to 1/16 or 1/8. Keys starting together form chords, gaps of an
+      eighth note or more become rests (shorter ones are the note held), and notes
+      are split and tied at bar lines (the `\time` in effect and the start moment).
+      The notes are spelled for the key, with octaves corrected, and written after
+      the selected note.
+    - Key releases now carry the MIDI timestamp too.
+    - Splitting into voices by register is still to do.
+  - Tests: 5 Python tests, and an instrumented recording test through the test
+    keyboard at ♩=240, which was timed within 6 ms and came out as
+    `c'4 d'4 e'4 <g' b'>2`. Also a voicesAt unit test and an include-parsing unit
+    test.
+
 ## Core decision: the LilyPond text is always the source of truth
 Every edit becomes a text edit, whether made in the source or on the score. LilyPond re-renders after each one. Denemo keeps its own music model and generates LilyPond from it, which is why it can't edit arbitrary hand-written LilyPond. Here the "music model" is a parse of one music expression (via python-ly). Edits to it are written back as minimal text changes, and everything else in the file stays untouched. Expressions the model can't represent (Scheme, unusual macros) stay text-only: selectable and jump-to-source, but not structurally editable.
 

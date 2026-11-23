@@ -264,11 +264,16 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
     var fillRests by remember { mutableStateOf(true) }
     /** New notes join the selected note or chord instead of following it. */
     var chordMode by remember { mutableStateOf(false) }
+    /** Recording in real time, if under way; and its tempo and rhythm grid. */
+    var recorder by remember { mutableStateOf<Recorder?>(null) }
+    var recordBpm by remember { mutableIntStateOf(80) }
+    var recordGrid by remember { mutableStateOf("16") }
     /** Notes, chords and rests waiting to be entered, in playing order. */
     val entries = remember { Channel<Entry>(Channel.UNLIMITED) }
     val connectedKeyboard by keyboard.connected.collectAsState()
-    DisposableEffect(keyboard, entering) {
-        if (!entering) return@DisposableEffect onDispose { }
+    DisposableEffect(keyboard, entering, recorder) {
+        // (while recording, what is played is written when recording stops)
+        if (!entering || recorder != null) return@DisposableEffect onDispose { }
         val chords = ChordCollector { keys -> entries.trySend(Entry.Keys(keys)) }
         val listener: (MidiKeyboard.Event) -> Unit = { e ->
             when (e) {
@@ -579,6 +584,38 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                 status = "Added a voice: play or tap its notes, and they take the place of the rests."
             } catch (ex: LilyTools.EditException) {
                 status = "Can't add a voice here: ${ex.message}"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    /** Stops recording and writes what was played after the selected note. */
+    fun stopRecording() {
+        val rec = recorder ?: return
+        recorder = null
+        val played = rec.stop()
+        val g = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
+        val at = selectedOffset
+        if (played.isEmpty() || g == null || at == null) {
+            status = if (played.isEmpty()) "Nothing was played." else "Select the note to write after first."
+            return
+        }
+        // The new music starts when the selected note ends: for its bar lines.
+        val start = (g.momentValue ?: 0.0) + (g.duration?.let { ScoreLookup.durationLength(it) } ?: 0.0)
+        busy = true
+        scope.launch {
+            try {
+                val before = text.text
+                val r = tools.record(before, at, played, start, recordGrid)
+                undo.addLast(before)
+                val after = r.edit.applyTo(before)
+                selection.firstNotNullOfOrNull { it.moment }?.let { pendingEdit.value = after to it }
+                selectedOffset = null
+                text = TextFieldValue(after, TextRange(r.start, r.end))
+                status = "Recorded ${played.size} notes."
+            } catch (ex: LilyTools.EditException) {
+                status = "Can't write the recording: ${ex.message}"
             } finally {
                 busy = false
             }
@@ -932,6 +969,16 @@ fun ScoreScreen(engine: LilyPondEngine, keyboard: MidiKeyboard) {
                     onFillRests = { fillRests = !fillRests },
                     chordMode = chordMode,
                     onChordMode = { chordMode = !chordMode },
+                    recordingBeat = recorder?.beat,
+                    bpm = recordBpm,
+                    onBpm = { recordBpm = (recordBpm + it).coerceIn(30, 240) },
+                    grid = recordGrid,
+                    onGrid = { recordGrid = if (recordGrid == "16") "8" else "16" },
+                    onRecord = {
+                        if (recorder != null) stopRecording()
+                        else if (selectedOffset == null) status = "Select the note to record after."
+                        else recorder = Recorder(keyboard, recordBpm).also { it.start(scope) }
+                    },
                     onUndo = ::undoLast,
                 ) else {
                     val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }
@@ -1283,6 +1330,13 @@ private fun EntryBar(
     /** Notes join the selected note or chord. */
     chordMode: Boolean,
     onChordMode: () -> Unit,
+    /** While recording: the beat (negative while counting in); null when not recording. */
+    recordingBeat: Int?,
+    bpm: Int,
+    onBpm: (Int) -> Unit,
+    grid: String,
+    onGrid: () -> Unit,
+    onRecord: () -> Unit,
     onUndo: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(ENTRY_BACKGROUND).padding(horizontal = 4.dp, vertical = 2.dp)) {
@@ -1314,6 +1368,24 @@ private fun EntryBar(
             else OutlinedButton(onClick = onFillRests, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Fill rests") }
             if (chordMode) Button(onClick = onChordMode, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Chord") }
             else OutlinedButton(onClick = onChordMode, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Chord") }
+            Spacer(Modifier.width(8.dp))
+            // Real-time recording: tempo, rhythm grid, record / stop.
+            if (recordingBeat == null) {
+                OutlinedButton(onClick = { onBpm(-5) }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("−") }
+                Text("♩=$bpm", fontSize = 14.sp, modifier = Modifier.padding(horizontal = 4.dp))
+                OutlinedButton(onClick = { onBpm(5) }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("+") }
+                OutlinedButton(onClick = onGrid, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("grid 1/$grid") }
+                Button(
+                    onClick = onRecord, contentPadding = PaddingValues(horizontal = 12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                ) { Text("● Record") }
+            } else {
+                Button(onClick = onRecord, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("■ Stop") }
+                Text(
+                    if (recordingBeat < 0) "Count-in: ${recordingBeat + 5}…" else "● Recording, beat ${recordingBeat + 1}",
+                    fontSize = 14.sp, color = Color(0xFFC62828), modifier = Modifier.padding(horizontal = 6.dp),
+                )
+            }
             OutlinedButton(onClick = onUndo, enabled = canUndo, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Undo") }
             Text(
                 (if (hasPlace && chordMode) "Into the selected chord. " else if (hasPlace) "After the selected note. " else "At the cursor. ") +

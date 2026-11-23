@@ -29,7 +29,8 @@ class MidiKeyboard(context: Context) {
     sealed interface Event {
         /** [delayMillis]: from the keyboard's timestamp to arrival here, a measure of latency. */
         data class NoteOn(val key: Int, val velocity: Int, val channel: Int, val timestamp: Long, val delayMillis: Double) : Event
-        data class NoteOff(val key: Int, val channel: Int) : Event
+        /** [timestamp]: when the key came up (System.nanoTime), as the keyboard said, else on arrival. */
+        data class NoteOff(val key: Int, val channel: Int, val timestamp: Long = System.nanoTime()) : Event
         data class Control(val number: Int, val value: Int, val channel: Int) : Event
         data class Program(val number: Int, val channel: Int) : Event
     }
@@ -195,8 +196,8 @@ class MidiKeyboard(context: Context) {
         parser.parse(msg, offset, count) { status, d1, d2 ->
             val channel = status and 0x0F
             val event = when (status and 0xF0) {
-                0x90 -> if (d2 > 0) Event.NoteOn(d1, d2, channel, timestamp, (arrived - timestamp) / 1e6) else Event.NoteOff(d1, channel)
-                0x80 -> Event.NoteOff(d1, channel)
+                0x90 -> if (d2 > 0) Event.NoteOn(d1, d2, channel, timestamp, (arrived - timestamp) / 1e6) else Event.NoteOff(d1, channel, timestamp)
+                0x80 -> Event.NoteOff(d1, channel, timestamp)
                 0xB0 -> Event.Control(d1, d2, channel)
                 0xC0 -> Event.Program(d1, channel)
                 else -> null // aftertouch, pitch bend

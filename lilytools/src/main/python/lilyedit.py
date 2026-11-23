@@ -1122,6 +1122,104 @@ def pad_voices(text, pos):
 
 
 # --------------------------------------------------------------------------
+# Recording: notes played in time, quantized and written in
+
+def time_at(text, pos):
+    """The bar length (whole notes) in effect at `pos`, from the last
+    \\time before it (4/4 if none)."""
+    found = re.findall(r"\\time\s+(\d+)\s*/\s*(\d+)", text[:pos])
+    if not found:
+        return Fraction(1)
+    n, d = found[-1]
+    return Fraction(int(n), int(d))
+
+
+def record(text, pos, played, start, grid="16", after=True):
+    """Writes music played in real time after the item at `pos` (or at `pos`).
+    `played`: (onset, release, MIDI key) in quarter notes from where the new
+    music begins; `start`: that place's moment in whole notes (for the bar
+    lines). Onsets and releases are rounded to the `grid` (e.g. "16"); keys
+    starting together form chords, gaps become rests, and notes are split
+    and tied at bar lines. Returns (text, start, end of the new music)."""
+    unit = Fraction(1, int(grid))
+
+    def tick(quarters):
+        return int(round(Fraction(quarters).limit_denominator(10000) / 4 / unit))
+
+    groups = {}
+    for onset, release, key in played:
+        a = tick(onset)
+        b = max(tick(release), a + 1)
+        keys, end = groups.get(a, (set(), a))
+        keys.add(int(key))
+        groups[a] = (keys, max(end, b))
+    if not groups:
+        raise ValueError("nothing was played")
+    onsets = sorted(groups)
+    # Players lift their fingers a little early: a gap shorter than an eighth
+    # note is the note held, not a rest.
+    min_rest = max(1, int(Fraction(1, 8) / unit))
+    items = []  # (keys or None for a rest, length in ticks)
+    if onsets[0] > 0:
+        items.append((None, onsets[0]))
+    for i, a in enumerate(onsets):
+        keys, end = groups[a]
+        nxt = onsets[i + 1] if i + 1 < len(onsets) else None
+        stop = end if nxt is None else min(end, nxt)
+        if nxt is not None and nxt - stop < min_rest:
+            stop = nxt
+        items.append((sorted(keys), stop - a))
+        if nxt is not None and nxt > stop:
+            items.append((None, nxt - stop))
+
+    bar = time_at(text, pos)
+    in_bar = Fraction(start).limit_denominator(10000) % bar
+    key = key_at(text, pos)
+    name = _language_writer(text)
+    words, new_pitches = [], []
+    for keys, ticks in items:
+        length = ticks * unit
+        spelled = [spell(k, key) for k in keys] if keys else None
+        pieces = []
+        while length > 0:
+            piece = min(length, bar - in_bar)
+            pieces += _durations_for(piece)
+            in_bar = (in_bar + piece) % bar
+            length -= piece
+        if spelled is None:
+            words += ["r" + d for d in pieces]
+            continue
+        names = [name(n, a) for n, a, _ in spelled]
+        chord = names[0] if len(names) == 1 else "<" + " ".join(names) + ">"
+        for j, d in enumerate(pieces):
+            words.append(chord + d + ("~" if j + 1 < len(pieces) else ""))
+            new_pitches += [(n, a, o) for n, a, o in spelled]
+    music = " ".join(words)
+
+    items_ = _items(text)
+    before = notes(text)
+    if after:
+        at = _item_end(text, items_[_item_index(text, items_, pos)][0])
+    else:
+        at = pos
+    following = [(it, w, eff) for it, w, eff in items_ if it.pos >= at]
+    if following and following[0][1] is None:  # the next item keeps its duration
+        nxt = following[0][0]
+        text = text[:nxt.insert_pos] + following[0][2] + text[nxt.insert_pos:]
+    pre = "" if at == 0 or text[at - 1].isspace() else " "
+    post = "" if at >= len(text) or text[at].isspace() else " "
+    text = text[:at] + pre + music + post + text[at:]
+    desired = ([n.key() for n in before if n.pos < at] + new_pitches + [n.key() for n in before if n.pos >= at])
+    text = _fix_octaves(text, desired)
+    begin = at + len(pre)
+    # the new music's end: after as many items as were written
+    items_after = _items(text)
+    k = next(i for i, (it, _, _) in enumerate(items_after) if _item_start(text, it) >= begin)
+    last = items_after[k + len(words) - 1][0]
+    return text, begin, _item_end(text, last)
+
+
+# --------------------------------------------------------------------------
 # Lyrics: verses typed as plain text, written as \\addlyrics after a melody
 
 # Blocks that hold settings, not music: lyrics never go after these.
@@ -1524,6 +1622,10 @@ def call(request_json):
                 for a, b, lengths in voice_lengths(text)]})
         elif op == "pad_voices":
             out = pad_voices(text, req["pos"])
+        elif op == "record":
+            out, start, end = record(text, req["pos"], req["played"], req["start"], req.get("grid", "16"),
+                                     req.get("after", True))
+            return json.dumps({"text": out, "start": start, "end": end})
         elif op == "verses":
             return json.dumps({"verses": verses(text, req["pos"])})
         elif op == "set_verse":
