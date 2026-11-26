@@ -132,7 +132,10 @@ class MidiKeyboard(context: Context) {
             }
         }, OPEN_TIMEOUT_MS)
         val m = manager ?: return
-        m.openDevice(info, { dev ->
+        // Asked for on the worker, after the closing disconnect() queued there: Android must
+        // see the old connection closed before the new one opens, or the late close can end
+        // the new one too (it did when a device was re-listed under a new id).
+        worker.post { m.openDevice(info, { dev ->
             trace("device ${if (dev == null) "NOT opened" else "opened"} after ${ms()} ms")
             if (opening != info) { dev?.close(); return@openDevice } // another was chosen meanwhile
             if (dev == null) {
@@ -162,7 +165,7 @@ class MidiKeyboard(context: Context) {
             _canSend.value = toKeyboard != null
             _status.value = if (fromKeyboard == null && info.outputPortCount > 0) "Connected to ${name(info)}, but its notes can't be read (port busy?)"
             else "Connected to ${name(info)}"
-        }, worker)
+        }, worker) }
     }
 
     fun disconnect() {

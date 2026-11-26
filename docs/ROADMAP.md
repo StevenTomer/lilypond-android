@@ -437,6 +437,8 @@ This plan covers the pieces needed before the editor and the editor phases after
   Each step is logged with its timing and what the device says about itself (type,
   ports, protocol, manufacturer), shown on the MIDI devices screen and included in
   its Share report. Rec with no keyboard connected says so.
+  The new connection is asked for on that thread too, after the old one is closed:
+  otherwise a late close of a re-listed device could end the new connection.
 - **0.31.1:** playback sounds on the tablet by default, also with a MIDI keyboard connected (the sound button still switches to it).
 - **0.31.0, tabs and coding keys:**
   - Several documents open at once, as tabs under the title band (`Documents.kt`).
