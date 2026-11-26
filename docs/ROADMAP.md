@@ -430,6 +430,16 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.32.0, USB keyboards spoken to directly:** a restart didn't help: on the Tab S7 FE
+  (Android 11) the MIDI service opens the DGX-670 but its output port never opens.
+  USB keyboards now go past the MIDI service (`UsbMidiDirect`): with the user's
+  permission (asked once per plugging in), the app claims the device's MIDI streaming
+  interface (audio class, subclass 3), detaching the system driver, and reads and
+  writes its bulk endpoints as USB-MIDI 1.0 packets (`UsbMidiPackets`, unit-tested).
+  Notes come from cable 0; sending (playback on the keyboard) is scheduled by
+  timestamp. If the direct way fails, the MIDI service is tried as before. Unplugging
+  is noticed from the USB detach broadcast. Not yet tried on the real keyboard: the
+  emulator has no USB host.
 - **0.31.3, second DGX-670 report:** Android's MIDI service opened the device at once
   but took until the cable was pulled to open its output port (15 s, then again after
   re-plugging): the port is held elsewhere, likely by the system's MIDI service still

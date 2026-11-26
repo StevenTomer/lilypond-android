@@ -96,7 +96,8 @@ fun MidiScreen(keyboard: MidiKeyboard) {
             fontSize = 13.sp,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
-            for (info in devices) {
+            // A keyboard spoken to directly leaves Android's list: still show it, as connected.
+            for (info in (devices + listOfNotNull(connected)).distinctBy { it.id }) {
                 val name = MidiKeyboard.name(info)
                 if (info == connected) Button(onClick = { keyboard.disconnect() }) { Text("✓ $name") }
                 else OutlinedButton(onClick = { keyboard.connect(info) }) { Text(name) }

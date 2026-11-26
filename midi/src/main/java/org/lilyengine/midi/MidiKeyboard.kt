@@ -26,6 +26,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * while moving between screens.
  */
 class MidiKeyboard(context: Context) {
+    private val app: Context = context.applicationContext
     sealed interface Event {
         /** [delayMillis]: from the keyboard's timestamp to arrival here, a measure of latency. */
         data class NoteOn(val key: Int, val velocity: Int, val channel: Int, val timestamp: Long, val delayMillis: Double) : Event
@@ -62,6 +63,11 @@ class MidiKeyboard(context: Context) {
     private var started = false
     /** The device being opened, until it is. */
     @Volatile private var opening: MidiDeviceInfo? = null
+    /** A USB keyboard spoken to directly (past Android's MIDI service), and which USB device it is. */
+    @Volatile private var direct: UsbMidiDirect? = null
+    @Volatile private var directUsb: android.hardware.usb.UsbDevice? = null
+    private val usbParser = MidiParser()
+    private var stopWatchingUsb: (() -> Unit)? = null
 
     private val _log = MutableStateFlow<List<String>>(emptyList())
     /** What happened while finding and opening devices, timed: for a report when a keyboard won't connect. */
@@ -81,13 +87,15 @@ class MidiKeyboard(context: Context) {
             trace("added: " + describe(info))
             refresh()
             _status.value = "Found ${name(info)}"
-            if (device == null) connect(info)
+            if (device == null && direct == null && opening == null) connect(info)
         }
 
         override fun onDeviceRemoved(info: MidiDeviceInfo) {
             if (isOwnDevice(info)) return
             trace("removed ${name(info)} (id ${info.id})")
-            if (info == _connected.value) disconnect()
+            // Claiming a USB keyboard directly makes Android drop its own device for it: that's not an unplugging.
+            if (info == _connected.value && direct != null) trace("Android's MIDI device for it went away (AndroLily speaks to it directly)")
+            else if (info == _connected.value) disconnect()
             refresh()
             _status.value = "Removed ${name(info)}"
         }
@@ -104,6 +112,14 @@ class MidiKeyboard(context: Context) {
         SharedMidiDevice.inputListeners += fromApps
         // Watch first, then look: a keyboard plugged in between is then not missed.
         m.registerDeviceCallback(callback, main)
+        stopWatchingUsb = UsbMidiDirect.watchDetach(app) { usb ->
+            if (usb.deviceName == directUsb?.deviceName) {
+                trace("USB: unplugged")
+                val gone = _connected.value
+                disconnect()
+                _status.value = "Unplugged ${gone?.let(::name) ?: "the keyboard"}"
+            }
+        }
         refresh()
         _devices.value.firstOrNull { it.outputPortCount > 0 }?.let(::connect)
     }
@@ -113,6 +129,8 @@ class MidiKeyboard(context: Context) {
         started = false
         SharedMidiDevice.inputListeners -= fromApps
         manager?.unregisterDeviceCallback(callback)
+        stopWatchingUsb?.invoke()
+        stopWatchingUsb = null
         disconnect()
     }
 
@@ -123,6 +141,44 @@ class MidiKeyboard(context: Context) {
         opening = info
         _status.value = "Opening ${name(info)}…"
         val asked = System.nanoTime()
+        fun ms() = (System.nanoTime() - asked) / 1_000_000
+        // A USB keyboard: spoken to directly, as Android's MIDI service can hang opening one.
+        @Suppress("DEPRECATION") // getParcelable(String, Class) needs API 33
+        val usb = if (info.type == MidiDeviceInfo.TYPE_USB) info.properties.getParcelable<android.hardware.usb.UsbDevice>(MidiDeviceInfo.PROPERTY_USB_DEVICE) else null
+        if (usb != null && UsbMidiDirect.midiInterface(usb) != null) {
+            _status.value = "Asking to use ${name(info)}…"
+            UsbMidiDirect.requestPermission(app, usb) { granted ->
+                if (opening != info) return@requestPermission
+                trace("USB permission ${if (granted) "granted" else "refused"} after ${ms()} ms")
+                if (!granted) {
+                    opening = null
+                    _status.value = "AndroLily wasn't allowed to use ${name(info)}. Tap it to be asked again."
+                    return@requestPermission
+                }
+                worker.post {
+                    val d = UsbMidiDirect.open(app, usb, ::trace) { b, o, c, t -> dispatch(usbParser, b, o, c, t) }
+                    if (opening != info) { d?.close(); return@post }
+                    if (d == null) {
+                        trace("trying Android's MIDI service instead")
+                        main.post { if (opening == info) openThroughService(info, asked) }
+                        return@post
+                    }
+                    direct = d
+                    directUsb = usb
+                    opening = null
+                    _connected.value = info
+                    _canSend.value = d.canSend
+                    _status.value = "Connected to ${name(info)}"
+                    trace("connected directly over USB after ${ms()} ms")
+                }
+            }
+            return
+        }
+        openThroughService(info, asked)
+    }
+
+    /** Opens [info] through Android's MIDI service (virtual and Bluetooth devices, and USB if direct fails). */
+    private fun openThroughService(info: MidiDeviceInfo, asked: Long) {
         fun ms() = (System.nanoTime() - asked) / 1_000_000
         // If Android's MIDI service never answers, say so rather than wait in silence.
         main.postDelayed({
@@ -169,8 +225,12 @@ class MidiKeyboard(context: Context) {
     }
 
     fun disconnect() {
-        if (device != null || opening != null) trace("disconnect ${_connected.value?.id ?: opening?.id}")
+        if (device != null || direct != null || opening != null) trace("disconnect ${_connected.value?.id ?: opening?.id}")
         opening = null
+        val usbDirect = direct
+        direct = null
+        directUsb = null
+        if (usbDirect != null) worker.post { usbDirect.close() }
         val ports = listOfNotNull(fromKeyboard, toKeyboard)
         val dev = device
         fromKeyboard = null
@@ -187,6 +247,7 @@ class MidiKeyboard(context: Context) {
 
     /** Sends MIDI bytes to the keyboard, at [timestamp] (System.nanoTime) or now. */
     fun send(bytes: ByteArray, timestamp: Long = System.nanoTime()) {
+        direct?.let { it.send(bytes, timestamp); return }
         toKeyboard?.send(bytes, 0, bytes.size, timestamp)
     }
 
