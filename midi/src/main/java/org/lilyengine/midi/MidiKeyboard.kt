@@ -85,8 +85,8 @@ class MidiKeyboard(context: Context) {
         }
 
         override fun onDeviceRemoved(info: MidiDeviceInfo) {
-            android.util.Log.i(TAG, "removed ${name(info)} (id ${info.id})")
             if (isOwnDevice(info)) return
+            trace("removed ${name(info)} (id ${info.id})")
             if (info == _connected.value) disconnect()
             refresh()
             _status.value = "Removed ${name(info)}"

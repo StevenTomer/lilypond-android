@@ -62,10 +62,24 @@ class SharedMidiDevice : MidiDeviceService() {
         /** As in res/xml/lilypond_midi_device.xml. */
         const val NAME = "AndroLily"
 
-        /** Whether [info] is this device (going by its names, as Android doesn't say which app a device is from). */
-        fun isIt(info: MidiDeviceInfo): Boolean =
-            info.type == MidiDeviceInfo.TYPE_VIRTUAL &&
-                info.properties.getString(MidiDeviceInfo.PROPERTY_MANUFACTURER) == NAME &&
-                info.properties.getString(MidiDeviceInfo.PROPERTY_PRODUCT) == NAME
+        /**
+         * Whether [info] is this device: by the service behind it, as Android may keep
+         * showing a device's old names (until a reboot) after an update renames it.
+         */
+        @Suppress("DEPRECATION") // getParcelable(String, Class) needs API 33
+        fun isIt(info: MidiDeviceInfo): Boolean {
+            if (info.type != MidiDeviceInfo.TYPE_VIRTUAL) return false
+            val service = info.properties.getParcelable<android.content.pm.ServiceInfo>(SERVICE_INFO)
+            if (service != null) return service.name == SharedMidiDevice::class.java.name
+            val names = setOf(NAME, OLD_NAME)
+            return info.properties.getString(MidiDeviceInfo.PROPERTY_MANUFACTURER) in names &&
+                info.properties.getString(MidiDeviceInfo.PROPERTY_PRODUCT) in names
+        }
+
+        /** Where Android puts a service device's ServiceInfo (MidiDeviceInfo's hidden PROPERTY_SERVICE_INFO). */
+        private const val SERVICE_INFO = "service_info"
+
+        /** What the device was called before the app was renamed. */
+        private const val OLD_NAME = "LilyPond"
     }
 }

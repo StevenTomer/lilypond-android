@@ -16,8 +16,8 @@ android {
         applicationId = "org.androlily"
         minSdk = 28
         targetSdk = 37
-        versionCode = 36
-        versionName = "0.31.2"
+        versionCode = 37
+        versionName = "0.31.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // LilyPond is only built for these (64-bit only: Guile bytecode is
         // compiled for 64-bit little-endian).

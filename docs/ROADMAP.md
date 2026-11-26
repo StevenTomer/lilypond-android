@@ -430,6 +430,12 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.31.3, second DGX-670 report:** Android's MIDI service opened the device at once
+  but took until the cable was pulled to open its output port (15 s, then again after
+  re-plugging): the port is held elsewhere, likely by the system's MIDI service still
+  stuck from 0.31.1's hang. Android also still listed the app's own device under its
+  old name ("LilyPond"), so the app connected to itself at start. It is now recognised
+  by its service (`service_info`), not its name. Removals are in the step log too.
 - **0.31.2, first test with the DGX-670:** opening the keyboard hung on "Opening
   Yamaha Corporation Portable Grand" and Android reported the app not responding.
   The device's ports were opened on the main thread; opening, port opening and
