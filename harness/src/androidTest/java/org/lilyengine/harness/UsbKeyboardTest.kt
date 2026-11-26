@@ -172,6 +172,15 @@ class UsbKeyboardTest {
     }
 
     @Test
+    fun connectingIsLoggedStepByStep() {
+        awaitConnected()
+        val log = keyboard.connectionLog.value.joinToString("\n")
+        for (step in listOf("connect: ", "device opened after", "output port opened after", "input port opened after")) {
+            assertTrue("missing \"$step\" in:\n$log", log.contains(step))
+        }
+    }
+
+    @Test
     fun unplugAndReplug() {
         TestKeyboardService.plugIn(context, false)
         // Gone from the list too (a late re-listing can show it once more first).

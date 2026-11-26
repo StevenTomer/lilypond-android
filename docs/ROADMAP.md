@@ -430,6 +430,13 @@ This plan covers the pieces needed before the editor and the editor phases after
     (the note after starts on beat 3, from LilyPond's moments), an 8va line, and an
     acciaccatura, all engraved with no warnings.
 
+- **0.31.2, first test with the DGX-670:** opening the keyboard hung on "Opening
+  Yamaha Corporation Portable Grand" and Android reported the app not responding.
+  The device's ports were opened on the main thread; opening, port opening and
+  closing now run on their own thread, with a 10-second "doesn't answer" message.
+  Each step is logged with its timing and what the device says about itself (type,
+  ports, protocol, manufacturer), shown on the MIDI devices screen and included in
+  its Share report. Rec with no keyboard connected says so.
 - **0.31.1:** playback sounds on the tablet by default, also with a MIDI keyboard connected (the sound button still switches to it).
 - **0.31.0, tabs and coding keys:**
   - Several documents open at once, as tabs under the title band (`Documents.kt`).

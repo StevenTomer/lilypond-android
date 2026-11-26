@@ -37,6 +37,11 @@ class MidiKeyboard(context: Context) {
 
     private val manager = context.applicationContext.getSystemService(Context.MIDI_SERVICE) as MidiManager?
     private val main = Handler(Looper.getMainLooper())
+    /**
+     * Opening a device and its ports are calls into Android's MIDI service that
+     * can take long (or hang, with some USB keyboards): never on the main thread.
+     */
+    private val worker = Handler(android.os.HandlerThread("midi-open").apply { start() }.looper)
     private val listeners = CopyOnWriteArrayList<(Event) -> Unit>()
 
     /** False if the device has no MIDI support at all. */
@@ -51,12 +56,21 @@ class MidiKeyboard(context: Context) {
     private val _canSend = MutableStateFlow(false)
     val canSend: StateFlow<Boolean> = _canSend
 
-    private var device: MidiDevice? = null
-    private var fromKeyboard: MidiOutputPort? = null // a device's output ports carry data to us
-    private var toKeyboard: MidiInputPort? = null
+    @Volatile private var device: MidiDevice? = null
+    @Volatile private var fromKeyboard: MidiOutputPort? = null // a device's output ports carry data to us
+    @Volatile private var toKeyboard: MidiInputPort? = null
     private var started = false
     /** The device being opened, until it is. */
-    private var opening: MidiDeviceInfo? = null
+    @Volatile private var opening: MidiDeviceInfo? = null
+
+    private val _log = MutableStateFlow<List<String>>(emptyList())
+    /** What happened while finding and opening devices, timed: for a report when a keyboard won't connect. */
+    val connectionLog: StateFlow<List<String>> = _log
+    private val clock = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.ROOT)
+    private fun trace(line: String) {
+        android.util.Log.i(TAG, line)
+        synchronized(_log) { _log.value = (_log.value + (clock.format(java.util.Date()) + "  " + line)).takeLast(LOG_LINES) }
+    }
 
     /** How many other apps listen to LilyPond's MIDI output ([sendToApps]). */
     val appsListening: StateFlow<Int> = SharedMidiDevice.listening
@@ -64,6 +78,7 @@ class MidiKeyboard(context: Context) {
     private val callback = object : MidiManager.DeviceCallback() {
         override fun onDeviceAdded(info: MidiDeviceInfo) {
             if (isOwnDevice(info)) return
+            trace("added: " + describe(info))
             refresh()
             _status.value = "Found ${name(info)}"
             if (device == null) connect(info)
@@ -103,37 +118,68 @@ class MidiKeyboard(context: Context) {
 
     fun connect(info: MidiDeviceInfo) {
         if (info == opening || info == _connected.value) return // already on its way
-        android.util.Log.i(TAG, "connect ${name(info)} (id ${info.id})")
+        trace("connect: " + describe(info))
         disconnect()
         opening = info
         _status.value = "Opening ${name(info)}…"
-        manager?.openDevice(info, { dev ->
+        val asked = System.nanoTime()
+        fun ms() = (System.nanoTime() - asked) / 1_000_000
+        // If Android's MIDI service never answers, say so rather than wait in silence.
+        main.postDelayed({
+            if (opening == info) {
+                trace("still opening after ${ms()} ms")
+                _status.value = "${name(info)} doesn't answer. Unplug the cable, plug it in again, and tap it once more."
+            }
+        }, OPEN_TIMEOUT_MS)
+        val m = manager ?: return
+        m.openDevice(info, { dev ->
+            trace("device ${if (dev == null) "NOT opened" else "opened"} after ${ms()} ms")
             if (opening != info) { dev?.close(); return@openDevice } // another was chosen meanwhile
-            opening = null
             if (dev == null) {
+                opening = null
                 _status.value = "Could not open ${name(info)}"
                 return@openDevice
             }
             device = dev
+            // The keyboard's notes come out of its output port: what entry and recording need.
+            if (info.outputPortCount > 0) {
+                _status.value = "Opening ${name(info)}: its notes…"
+                trace("opening output port 0")
+                fromKeyboard = runCatching { dev.openOutputPort(0) }
+                    .onFailure { trace("output port failed: $it") }.getOrNull()?.also { it.connect(receiver) }
+                trace("output port ${if (fromKeyboard == null) "NOT opened" else "opened"} after ${ms()} ms")
+            }
+            if (opening != info) return@openDevice // given up on meanwhile
+            if (info.inputPortCount > 0) {
+                _status.value = "Opening ${name(info)}: its sound…"
+                trace("opening input port 0")
+                toKeyboard = runCatching { dev.openInputPort(0) }.onFailure { trace("input port failed: $it") }.getOrNull()
+                trace("input port ${if (toKeyboard == null) "NOT opened (another app may have it)" else "opened"} after ${ms()} ms")
+            }
+            if (opening != info) return@openDevice
+            opening = null
             _connected.value = info
-            if (info.outputPortCount > 0) fromKeyboard = dev.openOutputPort(0)?.also { it.connect(receiver) }
-            if (info.inputPortCount > 0) toKeyboard = dev.openInputPort(0)
             _canSend.value = toKeyboard != null
-            _status.value = "Connected to ${name(info)}"
-        }, main)
+            _status.value = if (fromKeyboard == null && info.outputPortCount > 0) "Connected to ${name(info)}, but its notes can't be read (port busy?)"
+            else "Connected to ${name(info)}"
+        }, worker)
     }
 
     fun disconnect() {
-        if (device != null || opening != null) android.util.Log.i(TAG, "disconnect ${_connected.value?.id ?: opening?.id}")
+        if (device != null || opening != null) trace("disconnect ${_connected.value?.id ?: opening?.id}")
         opening = null
-        runCatching { fromKeyboard?.close() }
-        runCatching { toKeyboard?.close() }
-        runCatching { device?.close() }
+        val ports = listOfNotNull(fromKeyboard, toKeyboard)
+        val dev = device
         fromKeyboard = null
         toKeyboard = null
         device = null
         _connected.value = null
         _canSend.value = false
+        // Closing is a service call too: off the main thread.
+        if (ports.isNotEmpty() || dev != null) worker.post {
+            ports.forEach { runCatching { it.close() } }
+            runCatching { dev?.close() }
+        }
     }
 
     /** Sends MIDI bytes to the keyboard, at [timestamp] (System.nanoTime) or now. */
@@ -208,6 +254,25 @@ class MidiKeyboard(context: Context) {
 
     companion object {
         private const val TAG = "MidiKeyboard"
+        private const val OPEN_TIMEOUT_MS = 10_000L
+        private const val LOG_LINES = 80
+
+        /** What a device says about itself, for the connection log. */
+        fun describe(info: MidiDeviceInfo): String = buildString {
+            append(name(info)).append(" (id ").append(info.id).append(", ")
+            append(when (info.type) { MidiDeviceInfo.TYPE_USB -> "USB"; MidiDeviceInfo.TYPE_VIRTUAL -> "virtual"; MidiDeviceInfo.TYPE_BLUETOOTH -> "Bluetooth"; else -> "type ${info.type}" })
+            append(", ").append(info.outputPortCount).append(" out / ").append(info.inputPortCount).append(" in")
+            if (android.os.Build.VERSION.SDK_INT >= 33) append(", protocol ").append(info.defaultProtocol)
+            val p = info.properties
+            for (k in listOf(MidiDeviceInfo.PROPERTY_MANUFACTURER, MidiDeviceInfo.PROPERTY_PRODUCT, MidiDeviceInfo.PROPERTY_VERSION)) {
+                p.getString(k)?.let { append(", ").append(k).append('=').append(it) }
+            }
+            for (port in info.ports) {
+                append(", ").append(if (port.type == MidiDeviceInfo.PortInfo.TYPE_OUTPUT) "out" else "in").append(port.portNumber)
+                if (port.name.isNotEmpty()) append("=\"").append(port.name).append('"')
+            }
+            append(")")
+        }
 
         fun name(info: MidiDeviceInfo): String =
             info.properties.getString(MidiDeviceInfo.PROPERTY_NAME)

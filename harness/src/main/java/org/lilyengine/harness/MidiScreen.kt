@@ -40,6 +40,7 @@ fun MidiScreen(keyboard: MidiKeyboard) {
     val canSend by keyboard.canSend.collectAsState()
     val status by keyboard.status.collectAsState()
     val appsListening by keyboard.appsListening.collectAsState()
+    val connectionLog by keyboard.connectionLog.collectAsState()
     val log = remember { mutableStateListOf<String>() }
     val latencies = remember { mutableListOf<Double>() }
     fun add(line: String) {
@@ -75,6 +76,10 @@ fun MidiScreen(keyboard: MidiKeyboard) {
             val sorted = latencies.sorted()
             appendLine(String.format("Delivery delay: median %.1f ms, max %.1f ms", sorted[sorted.size / 2], sorted.last()))
         }
+        appendLine("Status: ${keyboard.status.value}")
+        appendLine()
+        appendLine("Connecting:")
+        connectionLog.forEach { appendLine(it) }
         appendLine()
         log.forEach { appendLine(it) }
     }
@@ -114,9 +119,15 @@ fun MidiScreen(keyboard: MidiKeyboard) {
                 add("→ sent C major chord" + listOfNotNull(" to the keyboard".takeIf { canSend }, " to the apps listening".takeIf { appsListening > 0 }).joinToString(" and"))
             }) { Text("Play C major") }
             Button(onClick = { log.clear(); latencies.clear() }) { Text("Clear") }
-            Button(onClick = { shareText(context, "AndroLily MIDI test", report()) }) { Text("Share") }
+            Button(onClick = { shareText(context, "AndroLily MIDI test", report()) }) { Text("Share report") }
         }
         Text(status, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
+        // How connecting went, step by step and timed (Share sends it too).
+        if (connectionLog.isNotEmpty()) Text(
+            connectionLog.takeLast(8).joinToString("\n"),
+            fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        )
         Text(
             log.joinToString("\n"),
             fontFamily = FontFamily.Monospace,

@@ -1341,6 +1341,7 @@ fun ScoreScreen(
                 }
                 Tool(onClick = {
                     if (recorder != null) stopRecording()
+                    else if (keyboard.connected.value == null) status = "No MIDI keyboard is connected: plug it in, or connect it in Settings ▸ Diagnostics ▸ MIDI devices."
                     else if (selectedOffset == null) status = "Select the note to record after."
                     else recorder = Recorder(keyboard, recordBpm).also { it.start(scope) }
                 }, selected = recorder != null,
