@@ -196,12 +196,17 @@
      (let* ((m (resolve-module '(lily output-ps)))
             (alist (module-ref m 'stencil-dispatch-alist))
             (orig (assq-ref alist 'grob-cause)))
+       ;; Replace the entry in place: LilyPond 2.24 lets the *last* entry
+       ;; for a key win, 2.26 the first, so prepending only works on 2.26.
        (module-set! m 'stencil-dispatch-alist
-                    (acons 'grob-cause
-                           (lambda (offset grob)
-                             (lilyengine:record! offset grob)
-                             (orig offset grob))
-                           alist))))
+                    (map (lambda (entry)
+                           (if (eq? (car entry) 'grob-cause)
+                               (cons 'grob-cause
+                                     (lambda (offset grob)
+                                       (lilyengine:record! offset grob)
+                                       (orig offset grob)))
+                               entry))
+                         alist))))
 
 %% Count pages: the backend writes "%%Page: n n" before each page.
 #(if lilyengine:scoremap-path
