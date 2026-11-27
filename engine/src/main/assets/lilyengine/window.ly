@@ -64,3 +64,24 @@
              (let ((h (ly:score-header score))) (if (module? h) (ly:score-set-header! new h)))
              (next new))
            (next score)))))
+
+%% Reprint the key signature where the window starts. Typesetting resumes
+%% mid-piece, and Key_engraver only prints a key when keyAlterations differs
+%% from lastKeyAlterations, so without this the window has no key signature
+%% (LilyPond's showLastLength has the same gap). Clearing lastKeyAlterations
+%% at the first typeset moment makes it print the key in effect. This
+%% engraver must run before Key_engraver, hence the \remove/\consists.
+#(define (lilyengine:key-reprint context)
+   (let ((skipping #t))
+     (make-engraver
+      ((process-music engraver)
+       (let ((skip (ly:context-property context 'skipTypesetting #f)))
+         (if (and skipping (not skip))
+             (ly:context-set-property! context 'lastKeyAlterations '()))
+         (set! skipping skip))))))
+
+#(if lilyengine:window
+     (ly:parser-include-string
+      "\\layout { \\context { \\Staff
+         \\consists #lilyengine:key-reprint
+         \\remove \"Key_engraver\" \\consists \"Key_engraver\" } }"))
