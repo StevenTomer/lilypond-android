@@ -44,6 +44,13 @@ class Notes(unittest.TestCase):
         self.assertIn("\\T { as4 as g } >>", out)
 
 
+    def test_insert_at_the_start_of_a_line_keeps_its_indent(self):
+        t = "S = \\relative c'' {\n  \\global\n  g4 a b c\n}\n"
+        out = e.insert(t, t.index("g4") - 1, [64], "4", after=False)
+        out = out[0] if isinstance(out, tuple) else out
+        self.assertIn("\n  e,4 g4 a b c\n", out)
+
+
 class SetPitch(unittest.TestCase):
     def pos(self, text, token, nth=0):
         i = -1

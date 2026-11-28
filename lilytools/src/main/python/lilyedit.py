@@ -820,6 +820,9 @@ def insert(text, pos, keys, duration=None, after=False):
     if after:
         pos = _item_end(text, items[_item_index(text, items, pos)][0])
     else:
+        # In the spaces before an item: at the item (the line keeps its indent).
+        while pos < len(text) and text[pos] in " \t":
+            pos += 1
         for it, _, _ in items:
             if _item_start(text, it) < pos < it.end:
                 pos = _item_end(text, it)
