@@ -140,7 +140,12 @@
               ;; have no box; point-and-click skips them too.
               (not (interval-empty? (ly:grob-extent grob grob X)))
               (not (interval-empty? (ly:grob-extent grob grob Y))))
-         (let* ((info (hashq-ref lilyengine:grob-info grob '(#f #f #f)))
+         (let* ((info (or (hashq-ref lilyengine:grob-info grob #f)
+                          ;; a spanner's piece on one line (a staff, a slur
+                          ;; across a line break): its original's
+                          (let ((orig (ly:grob-original grob)))
+                            (and orig (hashq-ref lilyengine:grob-info orig #f)))
+                          '(#f #f #f)))
                 (voice (first info))
                 (staff (second info))
                 (cause (ly:grob-property grob 'cause))
