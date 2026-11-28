@@ -27,6 +27,23 @@ class Notes(unittest.TestCase):
                                  (4, 1), (6, 1), (1, 2), (3, 1), (4, 1)])
 
 
+    def test_music_made_relative_where_it_is_used(self):
+        # The hymn layout: tagged phrases in one variable, \relative applied
+        # per part with \keepWithTag: entered notes get the octave played.
+        t = ("S = #(define-music-function (m) (ly:music?) #{ \\tag #'S $m #})\n"
+             "T = #(define-music-function (m) (ly:music?) #{ \\tag #'T $m #})\n"
+             "All = {\n  << \\S { es,4 as g f2. } \\T { c'4 c g f2. } >>\n"
+             "  << \\S { f4 as } \\T { as4 as } >>\n}\n"
+             "Sop = \\relative c'' { \\keepWithTag #'S \\All }\n"
+             "Ten = \\relative c { \\keepWithTag #'T \\All }\n")
+        out = e.insert(t, t.index("f2. } \\T"), [68, 72], "4", after=True)
+        out = out[0] if isinstance(out, tuple) else out
+        self.assertIn("\\S { es,4 as g f2. <as c>4 }", out)
+        out = e.insert(out, out.index("as4 as }") + 4, [55], "4", after=True)
+        out = out[0] if isinstance(out, tuple) else out
+        self.assertIn("\\T { as4 as g } >>", out)
+
+
 class SetPitch(unittest.TestCase):
     def pos(self, text, token, nth=0):
         i = -1

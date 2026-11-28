@@ -81,12 +81,141 @@ def notes(text):
     try:
         doc = ly.document.Document(text)
         ly.pitch.rel2abs.rel2abs(ly.document.Cursor(doc), first_pitch_absolute=True)
+        # Music made relative where it is used (a variable without \relative
+        # of its own, put in \relative c'' { \keepWithTag #'S \Var }): its
+        # notes for that use, read as LilyPond reads them there.
+        for synthetic, segments in _relative_uses(text):
+            absolute_here = {}
+
+            def record_here(self, pitch, language=None, _a=absolute_here):
+                _a[pitch.note_token.pos] = pitch.octave
+
+            ly.pitch.PitchIterator.write = record_here
+            sdoc = ly.document.Document(synthetic)
+            ly.pitch.rel2abs.rel2abs(ly.document.Cursor(sdoc), first_pitch_absolute=True)
+            for spos, octave in absolute_here.items():
+                for so, start, length in segments:
+                    if so <= spos < so + length:
+                        absolute[start + spos - so] = octave
+                        break
     finally:
         ly.pitch.PitchIterator.write = real_write
     for pos, octave in absolute.items():
         if pos in by_pos:
             by_pos[pos].octave = octave
     return result
+
+
+def _blank_comments(text):
+    """Comments (and strings' insides) blanked, same length."""
+    out = list(text)
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            for k in range(i + 1, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j + 1
+            continue
+        if c == "%":
+            if text.startswith("%{", i):
+                j = text.find("%}", i + 2)
+                j = n if j < 0 else j + 2
+            else:
+                j = text.find("\n", i)
+                j = n if j < 0 else j
+            for k in range(i, j):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _brace_end(clean, i):
+    """clean[i] == '{': the index after its partner."""
+    depth = 0
+    for j in range(i, len(clean)):
+        if clean[j] == "{":
+            depth += 1
+        elif clean[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+    return len(clean)
+
+
+_PLAIN_DEF = re.compile(r"(?m)^([A-Za-z]+)[ \t]*=[ \t]*(?=\{)")
+_RELATIVE_BLOCK = re.compile(r"\\relative\s+([a-g][a-z]*[',]*)\s*(?=\{)")
+_TAGGED_USE = re.compile(r"\\keepWithTag\s+#'([A-Za-z]+)\s*\\([A-Za-z]+)")
+_PLAIN_USE = re.compile(r"\\([A-Za-z]+)")
+_TAG_SYMBOL = re.compile(r"\\(?:keepWithTag|removeWithTag|tag)\s+#'([A-Za-z]+)")
+
+
+def _relative_uses(text):
+    """For each use of a plain variable inside \\relative (directly or
+    through \\keepWithTag #'T): (synthetic text, segments), the synthetic
+    text being that variable's music for the use ("\\relative c'' { … }",
+    for a tag only its \\T { … } blocks), segments (synthetic offset,
+    offset in text, length) mapping it back."""
+    if "\\relative" not in text:
+        return []
+    clean = _blank_comments(text)
+    defs = {}
+    for m in _PLAIN_DEF.finditer(clean):
+        b = m.end()
+        defs[m.group(1)] = (b + 1, _brace_end(clean, b) - 1)
+    if not defs:
+        return []
+    tags = set(_TAG_SYMBOL.findall(clean))
+    uses = []
+    for m in _RELATIVE_BLOCK.finditer(clean):
+        b = m.end()
+        block = clean[b:_brace_end(clean, b)]
+        tagged = set()
+        for t in _TAGGED_USE.finditer(block):
+            if t.group(2) in defs:
+                uses.append((m.group(1), t.group(1), t.group(2)))
+                tagged.add(t.start(2))
+        for u in _PLAIN_USE.finditer(block):
+            if u.group(1) in defs and u.start(1) not in tagged and \
+                    not re.search(r"#'[A-Za-z]+\s*$", block[:u.start()]):
+                uses.append((m.group(1), None, u.group(1)))
+    out = []
+    for start_pitch, tag, var in uses:
+        lo, hi = defs[var]
+        if _RELATIVE_BLOCK.search(clean[lo:hi]) or not _pitches(text[lo:hi]):
+            continue      # relative itself, or no notes
+        if tag is None:
+            slices = [(lo, hi)]
+        else:
+            slices = []
+            blocks = re.compile(r"\\(?:tag\s+#'([A-Za-z]+)|([A-Za-z]+))\s*(?=\{)")
+            pos = lo
+            for bm in blocks.finditer(clean, lo, hi):
+                if bm.start() < pos:
+                    continue
+                name = bm.group(1) or bm.group(2)
+                if name not in tags:
+                    continue
+                inner_lo = bm.end() + 1
+                inner_hi = _brace_end(clean, bm.end()) - 1
+                if name == tag:
+                    slices.append((inner_lo, inner_hi))
+                pos = inner_hi + 1
+        synthetic = "\\relative %s { " % start_pitch
+        segments = []
+        for a, b in slices:
+            piece = text[a:b].replace("<<", "  ").replace(">>", "  ")
+            segments.append((len(synthetic), a, b - a))
+            synthetic += piece + " "
+        out.append((synthetic + "}", segments))
+    return out
 
 
 def _octave_string(octave):
