@@ -53,7 +53,9 @@
 #(define lilyengine:wanted
    '(NoteHead Rest MultiMeasureRest Stem Accidental Dots Script
      DynamicText Hairpin Slur PhrasingSlur Tie Beam BarLine
-     StaffSymbol Clef ClefModifier KeySignature TimeSignature LyricText ChordName))
+     StaffSymbol Clef ClefModifier KeySignature TimeSignature LyricText ChordName
+     TextScript MetronomeMark RehearsalMark TextSpanner DynamicTextSpanner
+     TrillSpanner Fingering BreathingSign SustainPedal OttavaBracket TupletNumber))
 
 %% JSON writer. Written straight to the output port, without `format`
 %% (slow in Guile): a full page of piano music has thousands of grobs.

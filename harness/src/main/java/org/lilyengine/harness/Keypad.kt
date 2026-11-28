@@ -152,7 +152,8 @@ data class KeypadConfig(
                 }
             }.orEmpty()
             KeypadConfig(
-                o.optInt("columns", 5), o.optInt("rows", 4), o.optInt("cell", 44), pages, o.optBoolean("follow", true),
+                o.optInt("columns", 5), o.optInt("rows", 4), o.optInt("cell", 44),
+                if (pages.none { it.id == MARK_PAGE.id }) pages + MARK_PAGE else pages, o.optBoolean("follow", true),
                 o.optString("dock", "auto"), floating, o.optBoolean("translucent"),
             )
         }.getOrDefault(KeypadConfig())
@@ -162,6 +163,14 @@ data class KeypadConfig(
 
         /** Saved layouts older than this are replaced by the defaults (their commands changed). */
         const val VERSION = 2
+
+        /** What a tapped mark (an "mf", a "rit.") can do; added to saved layouts that predate it. */
+        val MARK_PAGE = KeypadPage("mark", "Mark", listOf(
+            "dir.up", "dir.down", "dir.auto", "mark.edit-text", "delete",
+            "mark.pp", "mark.p", "mark.mp", "mark.mf", "mark.f",
+            "mark.ff", "mark.sfz", "mark.fp", "mark.sf", null,
+            null, null, null, null, null,
+        ))
 
         val DEFAULT_PAGES = listOf(
             // Both modes: in Notes mode the values are for new notes, otherwise they change the selection.
@@ -183,6 +192,7 @@ data class KeypadConfig(
                 "wrap.triplet", "wrap.tuplet", "wrap.grace", "wrap.8va", "wrap.8vb",
                 "repeat", "ending.first", "ending.next", "bar.double", "bar.final",
             )),
+            MARK_PAGE,
             KeypadPage("structure", "Score", listOf(
                 "add.clef", "add.key", "add.time", "add.tempo", "add.bar",
                 "add.repeat", "voice.add", "voice.remove", "transpose", null,

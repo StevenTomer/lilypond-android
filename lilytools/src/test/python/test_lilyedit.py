@@ -775,5 +775,30 @@ class Fixes0270(unittest.TestCase):
         self.assertEqual(e.add_text("{ c4 }", 2, "ff", above=False, bold=True), '{ c4_\\markup { \\bold "ff" } }')
 
 
+
+class MarkTest(unittest.TestCase):
+    """A tapped mark (mf, rit.) is edited by itself, through call() as Kotlin does."""
+
+    def call(self, **req):
+        return json.loads(e.call(json.dumps(req)))
+
+    def test_mark_at(self):
+        text = '{ c4\\mf d^\\markup { \\italic "rit." } e }'
+        m = self.call(op="mark_at", text=text, pos=text.index("rit"))["mark"]
+        self.assertEqual((m["kind"], m["value"], m["direction"]), ("text", "rit.", "^"))
+        self.assertEqual(text[m["start"]:m["end"]], '^\\markup { \\italic "rit." }')
+        self.assertIsNone(self.call(op="mark_at", text=text, pos=2)["mark"])
+
+    def test_edits(self):
+        text = '{ c4\\mf d^"rit." e }'
+        mf = text.index("\\mf")
+        self.assertEqual(self.call(op="mark_remove", text=text, pos=mf)["text"], '{ c4 d^"rit." e }')
+        self.assertEqual(self.call(op="mark_value", text=text, pos=mf, value="ff")["text"], '{ c4\\ff d^"rit." e }')
+        rit = text.index("rit")
+        self.assertEqual(self.call(op="mark_direction", text=text, pos=rit, where="down")["text"], '{ c4\\mf d_"rit." e }')
+        self.assertEqual(self.call(op="mark_value", text=text, pos=rit, value="a tempo")["text"], '{ c4\\mf d^"a tempo" e }')
+        self.assertIn("error", self.call(op="mark_remove", text=text, pos=2))
+
+
 if __name__ == "__main__":
     unittest.main()

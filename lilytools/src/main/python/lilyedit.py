@@ -2064,6 +2064,23 @@ def call(request_json):
             return json.dumps({"text": out, "start": start, "keys": req.get("keys", [])})
         elif op == "toggle":
             out = toggle(text, req["pos"], req["what"])
+        elif op == "mark_at":
+            import lilymarks
+            m = lilymarks.mark_at(text, req["pos"])
+            return json.dumps({"mark": None if m is None else {
+                "start": m.start, "end": m.end, "kind": m.kind, "value": m.value,
+                "direction": m.direction, "canFlip": m.can_flip}})
+        elif op in ("mark_remove", "mark_direction", "mark_value"):
+            import lilymarks
+            m = lilymarks.mark_at(text, req["pos"])
+            if m is None:
+                raise ValueError("no mark here")
+            if op == "mark_remove":
+                out = lilymarks.remove(text, m)[0]
+            elif op == "mark_direction":
+                out = lilymarks.set_direction(text, m, req["where"])
+            else:
+                out = lilymarks.replace_value(text, m, req["value"])
         elif op == "multi":
             out, positions = multi(text, req["positions"], req["edit"], req.get("arg"))
             return json.dumps({"text": out, "positions": positions})

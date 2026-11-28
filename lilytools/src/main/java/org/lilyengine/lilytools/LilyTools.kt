@@ -84,6 +84,40 @@ class LilyTools(context: Context) {
         JSONObject().put("op", "toggle").put("pos", text.codePointCount(0, offset)).put("what", what),
     )
 
+    /**
+     * A mark in the text: a dynamic, articulation, text ("rit."), tempo,
+     * rehearsal mark, hairpin, slur, tie, fingering… [start] and [end] are
+     * string offsets; [direction] is "^", "_", "-" or "" as written.
+     */
+    data class Mark(val start: Int, val end: Int, val kind: String, val value: String, val direction: String, val canFlip: Boolean)
+
+    /** The mark at [offset] (a tapped "mf" or "rit."), if there is one. */
+    suspend fun markAt(text: String, offset: Int): Mark? = withContext(dispatcher) {
+        val request = JSONObject().put("op", "mark_at").put("text", text).put("pos", text.codePointCount(0, offset))
+        val reply = JSONObject(lilyedit().callAttr("call", request.toString()).toString())
+        if (reply.has("error")) throw EditException(reply.getString("error"))
+        val m = reply.optJSONObject("mark") ?: return@withContext null
+        Mark(
+            text.offsetByCodePoints(0, m.getInt("start")), text.offsetByCodePoints(0, m.getInt("end")),
+            m.getString("kind"), m.getString("value"), m.getString("direction"), m.getBoolean("canFlip"),
+        )
+    }
+
+    /** Removes the mark at [offset], leaving its note. */
+    suspend fun removeMark(text: String, offset: Int): TextEdit = call(
+        text, JSONObject().put("op", "mark_remove").put("pos", text.codePointCount(0, offset)),
+    )
+
+    /** Puts the mark at [offset] "up" (^), "down" (_) or "auto" (LilyPond decides). */
+    suspend fun markDirection(text: String, offset: Int, where: String): TextEdit = call(
+        text, JSONObject().put("op", "mark_direction").put("pos", text.codePointCount(0, offset)).put("where", where),
+    )
+
+    /** Another dynamic for a dynamic ("f" for "mf"), or new words for a text mark. */
+    suspend fun markValue(text: String, offset: Int, value: String): TextEdit = call(
+        text, JSONObject().put("op", "mark_value").put("pos", text.codePointCount(0, offset)).put("value", value),
+    )
+
     /** The result of a range edit: the edit, and where the selected items are in the edited text. */
     data class RangeEdit(val edit: TextEdit, val offsets: List<Int>)
 

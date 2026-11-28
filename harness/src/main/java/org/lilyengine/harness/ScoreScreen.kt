@@ -581,6 +581,21 @@ fun ScoreScreen(
         else runCatching { at.map { tools.marks(text.text, it) }.reduce { a, b -> a intersect b } }.getOrDefault(emptySet())
     }
 
+    /** The mark selected by a tap on it (an "mf", "rit.", a slur…): edited by itself, not its note. */
+    var selectedMark by remember { mutableStateOf<LilyTools.Mark?>(null) }
+    /** The words of a text mark being changed (its dialog is open). */
+    var markWords by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(selection, selectedOffset, text.text) {
+        val off = selectedOffset
+        val onMark = range.isEmpty() && selection.isNotEmpty() &&
+            selection.none { it.type == "NoteHead" || it.type == "Rest" } &&
+            selection.any { it.type in ScoreLookup.MARK_TYPES }
+        selectedMark = if (!onMark || off == null || off >= text.text.length) null
+        else runCatching { tools.markAt(text.text, off) }.getOrNull()
+        val m = selectedMark
+        if (m != null && text.selection != TextRange(m.start, m.end)) text = text.copy(selection = TextRange(m.start, m.end))
+    }
+
     /** Runs an edit on every item of the range, as one text change; the range follows its items. */
     fun rangeEdit(action: suspend (source: String, offsets: List<Int>) -> LilyTools.RangeEdit) {
         if (busy || range.size < 2) return
@@ -1096,6 +1111,8 @@ fun ScoreScreen(
     }
     // A box drawn round notes: the page with what goes over a range.
     LaunchedEffect(range.size >= 2) { if (range.size >= 2 && !entering && !lyricsMode) follow("lines") }
+    // A tapped mark: the page for marks.
+    LaunchedEffect(selectedMark != null) { if (selectedMark != null && !entering && !lyricsMode) follow("mark") }
 
     val fresh = text.text == renderedText
     val selected = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" }?.takeIf { fresh }
@@ -1121,11 +1138,30 @@ fun ScoreScreen(
         if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Dot) }
         else selected?.duration?.let { d -> edit { src, off -> tools.setDuration(src, off, if (d.endsWith(".")) d.trimEnd('.') else "$d.") } }
     }
-    fun markSel(what: String) =
-        if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Toggle(what)) } else edit { src, off -> tools.toggle(src, off, what) }
+    /** An edit of the selected mark; [gone]: it removes the mark, so nothing stays selected. */
+    fun markEdit(gone: Boolean = false, action: suspend (source: String, offset: Int) -> TextEdit) {
+        val m = selectedMark ?: return
+        edit(at = m.start, action = action)
+        if (gone) { selection = emptyList(); selectedOffset = null; selectedMark = null }
+    }
 
-    fun deleteSel() =
-        if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) } else edit { src, off -> tools.delete(src, off) }
+    fun markSel(what: String) {
+        val m = selectedMark
+        when {
+            inRange -> rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Toggle(what)) }
+            // On a dynamic, another dynamic replaces it (the same one again takes it off).
+            m != null && m.kind == "dynamic" && what in DYNAMIC_NAMES ->
+                if (what == m.value) markEdit(gone = true) { src, off -> tools.removeMark(src, off) }
+                else markEdit { src, off -> tools.markValue(src, off, what) }
+            else -> edit { src, off -> tools.toggle(src, off, what) }
+        }
+    }
+
+    fun deleteSel() = when {
+        inRange -> rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Delete) }
+        selectedMark != null -> markEdit(gone = true) { src, off -> tools.removeMark(src, off) }
+        else -> edit { src, off -> tools.delete(src, off) }
+    }
 
     val commandList: List<Command> = buildList {
         fun c(
@@ -1158,7 +1194,8 @@ fun ScoreScreen(
             if (inRange) rangeEdit { src, o -> tools.range(src, o, LilyTools.RangeOp.Respell) } else edit { src, off -> tools.respell(src, off) }
         }
         c("transpose", "Transpose… (the selection, or the whole score)", "Pitch", label("⇅", 20)) { transposing = true }
-        c("delete", "Delete (like Cut, but the clipboard is left as it is)", "Edit", Glyph.Vector(Glyphs.Delete), hasNote) { deleteSel() }
+        c("delete", "Delete (the selected mark, or the notes; like Cut, but the clipboard is left as it is)", "Edit",
+            Glyph.Vector(Glyphs.Delete), { selected != null || selectedMark != null }) { deleteSel() }
         for (n in 1..4) {
             c("voice.$n", "Voice $n (new notes go into it, on a staff with several voices)", "Voices", label("$n", 17),
                 { voicesHere.size >= n }, { voicesHere.getOrNull(n - 1)?.let { v -> selected?.sameVoiceAs(v) } == true },
@@ -1173,9 +1210,25 @@ fun ScoreScreen(
         for ((what, glyph, name) in ARTICULATION_KEYS) {
             c("mark.$what", name, "Articulations", glyph, hasNote, { what in selectedMarks }) { markSel(what) }
         }
-        for (d in listOf("ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "fp", "sf", "sfz", "sfp", "rfz")) {
-            c("mark.$d", "$d (dynamic)", "Dynamics", Glyph.Label(d, if (d.length > 2) 14 else 17, italic = true, bold = true), hasNote, { d in selectedMarks }) { markSel(d) }
+        for (d in DYNAMIC_NAMES) {
+            c("mark.$d", "$d (dynamic; on a selected dynamic, it replaces it)", "Dynamics", Glyph.Label(d, if (d.length > 2) 14 else 17, italic = true, bold = true),
+                { selected != null || selectedMark?.kind == "dynamic" },
+                { d in selectedMarks || (selectedMark?.kind == "dynamic" && selectedMark?.value == d) }) { markSel(d) }
         }
+        // The selected mark (tap an "mf", a "rit.", an accent…).
+        val flips = { selectedMark?.canFlip == true }
+        c("dir.up", "Put the selected mark above the staff", "Selected mark", label("▲"), flips, { selectedMark?.direction == "^" }) {
+            markEdit { src, off -> tools.markDirection(src, off, "up") }
+        }
+        c("dir.down", "Put the selected mark below the staff", "Selected mark", label("▼"), flips, { selectedMark?.direction == "_" }) {
+            markEdit { src, off -> tools.markDirection(src, off, "down") }
+        }
+        c("dir.auto", "Let LilyPond place the selected mark", "Selected mark", label("↕"), flips,
+            { selectedMark?.canFlip == true && selectedMark?.direction in setOf("", "-") }) {
+            markEdit { src, off -> tools.markDirection(src, off, "auto") }
+        }
+        c("mark.edit-text", "Change the words of the selected text (rit., dolce…)", "Selected mark", label("✎", 20),
+            { selectedMark?.kind == "text" }) { markWords = selectedMark?.value }
         c("span.slur", "Slur over the selected notes (each voice)", "Lines", label("(⋯)", 15), { inRange }) { spanRange("slur") }
         c("span.cresc", "Crescendo over the selected notes", "Lines", label("<⋯", 15), { inRange }) { spanRange("cresc") }
         c("span.decresc", "Diminuendo over the selected notes", "Lines", label(">⋯", 15), { inRange }) { spanRange("decresc") }
@@ -1386,7 +1439,13 @@ fun ScoreScreen(
                         TextButton(onClick = { edit(p.start + 2) { src, off -> tools.padVoices(src, off) } }) { Text("Fill with rests") }
                     }
                 }
-            SelectionInfo(selection, lookup, range.size)
+            SelectionInfo(selection, lookup, range.size, selectedMark)
+            markWords?.let { start ->
+                MarkWordsDialog(start, onDismiss = { markWords = null }) { words ->
+                    markWords = null
+                    markEdit { src, off -> tools.markValue(src, off, words) }
+                }
+            }
             recorder?.beat?.let { b ->
                 Text(
                     if (b < 0) "  ● Recording: count-in ${b + 5}…" else "  ● Recording: beat ${b + 1}",
@@ -2257,7 +2316,7 @@ private object ScoreMapRational {
 }
 
 @Composable
-private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItems: Int) {
+private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItems: Int, mark: LilyTools.Mark? = null) {
     val g = selection.firstOrNull { it.type == "NoteHead" || it.type == "Rest" } ?: selection.firstOrNull()
     val voices = remember(lookup) { lookup?.map?.grobs?.mapNotNull { it.voice }?.distinct()?.sorted().orEmpty() }
     // One line, always: a taller line would move the score under the pen whenever the selection changes.
@@ -2266,6 +2325,18 @@ private fun SelectionInfo(selection: List<Grob>, lookup: ScoreLookup?, rangeItem
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (mark != null && rangeItems < 2) {
+            val kind = MARK_KIND_NAMES[mark.kind] ?: mark.kind
+            val value = when {
+                mark.value.isEmpty() -> ""
+                mark.kind == "text" || mark.kind == "tempo" -> " “${mark.value}”"
+                else -> " ${mark.value}"
+            }
+            val where = when (mark.direction) { "^" -> " · above the staff"; "_" -> " · below the staff"; else -> "" }
+            Text("${kind.replaceFirstChar { it.uppercase() }}$value$where · Delete removes just this mark",
+                fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            return@Row
+        }
         if (g == null) {
             Text("Tap a note, or draw a box around notes with the pen.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             return@Row
@@ -2335,3 +2406,25 @@ lower = \relative c {
   \layout { }
 }
 """.trimStart()
+
+
+private val DYNAMIC_NAMES = listOf("ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "fp", "sf", "sfz", "sfp", "rfz")
+
+private val MARK_KIND_NAMES = mapOf(
+    "dynamic" to "dynamic", "articulation" to "articulation", "text" to "text", "tempo" to "tempo",
+    "rehearsal" to "rehearsal mark", "hairpin" to "hairpin", "fingering" to "fingering", "slur" to "slur",
+    "phrasing" to "phrasing slur", "tie" to "tie", "spanner" to "spanner", "ottava" to "ottava",
+)
+
+/** New words for a text mark ("rit." → "a tempo"). */
+@Composable
+private fun MarkWordsDialog(start: String, onDismiss: () -> Unit, onChange: (String) -> Unit) {
+    var words by remember { mutableStateOf(start) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Text") },
+        text = { OutlinedTextField(words, { words = it }, singleLine = true, label = { Text("Words") }) },
+        confirmButton = { TextButton(onClick = { if (words.isNotBlank()) onChange(words.trim()) }, enabled = words.isNotBlank()) { Text("Change") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}

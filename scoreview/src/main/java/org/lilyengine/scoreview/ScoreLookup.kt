@@ -391,8 +391,17 @@ class ScoreLookup(val map: ScoreMap, val book: Int = 1) {
         /** Grob types a tap can select, in order of preference. */
         val SELECTABLE = listOf(
             "NoteHead", "Rest", "MultiMeasureRest", "Accidental", "Dots",
-            "Script", "DynamicText", "Hairpin", "Slur", "PhrasingSlur", "Tie",
-            "LyricText", "ChordName", "Clef", "KeySignature", "TimeSignature",
+            "Script", "Fingering", "DynamicText", "TextScript", "MetronomeMark", "RehearsalMark",
+            "BreathingSign", "Hairpin", "Slur", "PhrasingSlur", "Tie", "DynamicTextSpanner",
+            "TextSpanner", "TrillSpanner", "SustainPedal", "OttavaBracket",
+            "LyricText", "ChordName", "Clef", "KeySignature", "TimeSignature", "TupletNumber",
+        )
+
+        /** Marks: a tap selects the mark itself (to delete, flip or change it), not its note. */
+        val MARK_TYPES = setOf(
+            "Script", "Fingering", "DynamicText", "TextScript", "MetronomeMark", "RehearsalMark",
+            "BreathingSign", "Hairpin", "Slur", "PhrasingSlur", "Tie", "DynamicTextSpanner",
+            "TextSpanner", "TrillSpanner", "SustainPedal", "OttavaBracket",
         )
 
         /** Distance in staff spaces from a point to a grob's box; 0 inside it. */
